@@ -1,0 +1,118 @@
+"AppWorkshop"
+{
+	"appid"		"268500"
+	"SizeOnDisk"		"543425482"
+	"NeedsUpdate"		"0"
+	"NeedsDownload"		"0"
+	"TimeLastUpdated"		"0"
+	"TimeLastAppRan"		"0"
+	"LastBuildID"		"0"
+	"WorkshopItemsInstalled"
+	{
+		"1796402257"
+		{
+			"size"		"22814589"
+			"timeupdated"		"1751826049"
+			"manifest"		"6839424018373705785"
+		}
+		"2635921321"
+		{
+			"size"		"1953733"
+			"timeupdated"		"1751826090"
+			"manifest"		"7143313700853530056"
+		}
+		"2918092216"
+		{
+			"size"		"4686140"
+			"timeupdated"		"1751760467"
+			"manifest"		"9185648190855454935"
+		}
+		"2982066357"
+		{
+			"size"		"5624634"
+			"timeupdated"		"1751778565"
+			"manifest"		"8417670516285802479"
+		}
+		"3187313670"
+		{
+			"size"		"507850468"
+			"timeupdated"		"1751840742"
+			"manifest"		"2950012008911631443"
+		}
+		"3262547362"
+		{
+			"size"		"437292"
+			"timeupdated"		"1751213969"
+			"manifest"		"9067183204955340812"
+		}
+		"3475708439"
+		{
+			"size"		"58626"
+			"timeupdated"		"1751820890"
+			"manifest"		"7187049728680533424"
+		}
+	}
+	"WorkshopItemDetails"
+	{
+		"1796402257"
+		{
+			"manifest"		"6839424018373705785"
+			"timeupdated"		"1751826049"
+			"timetouched"		"1751874022"
+			"latest_timeupdated"		"1751826049"
+			"latest_manifest"		"6839424018373705785"
+		}
+		"2635921321"
+		{
+			"manifest"		"7143313700853530056"
+			"timeupdated"		"1751826090"
+			"timetouched"		"1751878242"
+			"latest_timeupdated"		"1751826090"
+			"latest_manifest"		"7143313700853530056"
+		}
+		"2918092216"
+		{
+			"manifest"		"9185648190855454935"
+			"timeupdated"		"1751760467"
+			"timetouched"		"1751842772"
+			"latest_timeupdated"		"1751760467"
+			"latest_manifest"		"9185648190855454935"
+		}
+		"2982066357"
+		{
+			"manifest"		"8417670516285802479"
+			"timeupdated"		"1751778565"
+			"timetouched"		"1751844905"
+			"BytesDownloaded"		"526896"
+			"BytesToDownload"		"526896"
+			"latest_timeupdated"		"1751778565"
+			"latest_manifest"		"8417670516285802479"
+		}
+		"3187313670"
+		{
+			"manifest"		"2950012008911631443"
+			"timeupdated"		"1751840742"
+			"timetouched"		"1751874363"
+			"BytesDownloaded"		"300914768"
+			"BytesToDownload"		"300914768"
+			"latest_timeupdated"		"1751840742"
+			"latest_manifest"		"2950012008911631443"
+		}
+		"3262547362"
+		{
+			"manifest"		"9067183204955340812"
+			"timeupdated"		"1751213969"
+			"timetouched"		"1751845024"
+			"latest_timeupdated"		"1751213969"
+			"latest_manifest"		"9067183204955340812"
+		}
+		"3475708439"
+		{
+			"manifest"		"7187049728680533424"
+			"timeupdated"		"1751820890"
+			"timetouched"		"1751877868"
+			"latest_timeupdated"		"1751820890"
+			"latest_manifest"		"7187049728680533424"
+		}
+	}
+}

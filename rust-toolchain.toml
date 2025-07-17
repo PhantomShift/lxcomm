@@ -1,0 +1,3 @@
+[toolchain]
+# See top of src/main.rs for list of used nightly features
+channel = "nightly"
