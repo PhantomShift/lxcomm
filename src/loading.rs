@@ -12,10 +12,10 @@ pub fn build_active_config<D: AsRef<Path>>(
     let profile_path = PROFILES_DIR.join(profile.id.to_string());
 
     if !profile_path.try_exists()? {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "profile directory not found",
-        ));
+        std::fs::create_dir(&profile_path)?;
+        eprintln!(
+            "Warning: created new profile folder; if this is not a fresh profile, something has gone wrong."
+        );
     }
 
     if ACTIVE_CONFIG_DIR.try_exists()? {
