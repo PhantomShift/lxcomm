@@ -1552,7 +1552,7 @@ impl App {
             Message::LoadPickLaunchCommand => {
                 let task = Task::done(Message::SetBusy(true));
                 let task = task.chain(Task::future(async {
-                    if let Some(handle) = rfd::AsyncFileDialog::new().pick_folder().await {
+                    if let Some(handle) = rfd::AsyncFileDialog::new().pick_file().await {
                         Message::LoadSetLaunchCommand(handle.path().display().to_string())
                     } else {
                         Message::None
