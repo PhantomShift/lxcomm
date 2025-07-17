@@ -13,7 +13,6 @@ bstr = "1.12.0"
 dircpy = "0.3.19"
 etcetera = "0.10.0"
 eyre = "0.6.12"
-iced_fonts = { git = "https://github.com/Redhawk18/iced_fonts.git", version = "0.2.0", features = ["fontawesome"] }
 indoc = "2.0.6"
 keyring = { git = "https://github.com/open-source-cooperative/keyring-rs", version = "4.0.0-rc.2" }
 keyvalues-serde = "0.2.2"
@@ -34,7 +33,13 @@ thiserror = "2.0.12"
 tokio = "1.46.0"
 tokio-util = { version = "0.7.15", features = ["rt"] }
 which = "8.0.0"
+
+[target.'cfg(windows)'.dependencies]
+single-instance = "0.3.3"
+
+[target.'cfg(linux)'.dependencies]
 zbus = "5.7.1"
+iced_fonts = { git = "https://github.com/Redhawk18/iced_fonts.git", version = "0.2.0", features = ["fontawesome"] }
 
 [dependencies.iced]
 version = "0.14.0-dev"

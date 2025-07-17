@@ -23,11 +23,15 @@ static ITEM_FILE_DETAILS_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
     path
 });
 
-/// Note that this relies on the nightly feature [`junction_point`](https://doc.rust-lang.org/beta/std/os/windows/fs/fn.junction_point.html)
-/// for functionality on Windows.
 /// Errors if `from` is not a file.
 /// Exists because although I don't plan on specifically
 /// supporting Windows, for now I want to keep things generic where possible.
+///
+/// Note that this requires permissions to create symlinks,
+/// which means that one of the following actions must be taken, in order of simplicity:
+/// 1) Run LXCOMM with administrative privileges
+/// 2) Run Windows in Developer Mode
+/// 3) Add  `SeCreateSymbolicLink` permission to local user (requires gpedit.msc)
 pub fn link_files<F: AsRef<Path>, T: AsRef<Path>>(from: F, to: T) -> Result<(), std::io::Error> {
     if from.as_ref().is_dir() {
         return Err(std::io::Error::new(
@@ -39,12 +43,13 @@ pub fn link_files<F: AsRef<Path>, T: AsRef<Path>>(from: F, to: T) -> Result<(), 
     #[cfg(not(target_os = "windows"))]
     std::os::unix::fs::symlink(from.as_ref(), to.as_ref())?;
     #[cfg(target_os = "windows")]
-    std::os::windows::fs::junction_point(from.as_ref(), to.as_ref())?;
+    std::os::windows::fs::symlink_file(from.as_ref(), to.as_ref())?;
 
     Ok(())
 }
 
-/// Errors if `from` is not a directory. See [link_files] for nightly details.
+/// Note that this relies on the nightly feature [`junction_point`](https://doc.rust-lang.org/beta/std/os/windows/fs/fn.junction_point.html)
+/// for functionality on Windows. Errors if `from` is not a directory.
 pub fn link_dirs<F: AsRef<Path>, T: AsRef<Path>>(from: F, to: T) -> Result<(), std::io::Error> {
     if from.as_ref().is_file() {
         return Err(std::io::Error::new(

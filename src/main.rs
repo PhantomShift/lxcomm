@@ -4,7 +4,7 @@
 #![feature(path_add_extension)]
 // For windows soft links
 #![cfg_attr(target_os = "windows", feature(junction_point))]
-#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
     cell::RefCell,
@@ -36,7 +36,6 @@ use iced::{
     },
 };
 use iced_aw::{card, widget::LabeledFrame};
-use iced_fonts::fontawesome;
 use ringmap::RingMap;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
@@ -46,10 +45,15 @@ use steam_rs::{
 };
 use strum::{Display, EnumIter, IntoEnumIterator};
 
-use crate::{
-    extensions::{DetailsExtension, NotificationHint, NotificationParameters, NotificationSender},
-    mod_edit::EditorMessage,
+#[cfg(target_os = "windows")]
+use crate::extensions::DetailsExtension;
+#[cfg(target_os = "linux")]
+use crate::extensions::{
+    DetailsExtension,
+    zbus_ext::{NotificationHint, NotificationParameters, NotificationSender},
 };
+use crate::mod_edit::EditorMessage;
+use crate::platform::symbols;
 
 pub mod extensions;
 pub mod files;
@@ -57,6 +61,7 @@ pub mod library;
 pub mod loading;
 pub mod markup;
 pub mod mod_edit;
+pub mod platform;
 pub mod steam_manifest;
 pub mod steamcmd;
 pub mod web;
@@ -72,8 +77,12 @@ static APP_STRATEGY_ARGS: LazyLock<AppStrategyArgs> = LazyLock::new(|| AppStrate
     top_level_domain: "io.github".to_string(),
     app_name: "lxcomm".to_string(),
 });
+
+#[cfg(target_os = "linux")]
 static APP_SESSION_NAME: &str = "io.github.phantomshift.lxcomm";
+#[cfg(target_os = "linux")]
 static APP_SESSION_PATH: &str = "/io/github/phantomshift/lxcomm";
+
 fn get_strategy() -> impl AppStrategy {
     etcetera::app_strategy::choose_native_strategy(APP_STRATEGY_ARGS.clone())
         .expect("native strategy should succeed")
@@ -331,7 +340,9 @@ pub enum Message {
     EscapeModal,
 
     // Subscription-related
+    #[cfg(target_os = "linux")]
     DbusError(zbus::Error),
+
     GainFocus,
     CloseAppRequested,
     LoggingSetup(Sender<Message>),
@@ -419,8 +430,10 @@ struct AppSave {
 }
 
 pub struct App {
-    api_key: SecretString,
+    #[cfg(target_os = "linux")]
     dbus_connection: zbus::blocking::Connection,
+
+    api_key: SecretString,
     current_page: AppPage,
     modal_stack: Vec<AppModal>,
     browsing_page: u32,
@@ -615,7 +628,9 @@ impl App {
         Theme::Ferra
     }
 
-    fn boot(connection: zbus::blocking::Connection) -> eyre::Result<(Self, Task<Message>)> {
+    fn boot(
+        #[cfg(target_os = "linux")] connection: zbus::blocking::Connection,
+    ) -> eyre::Result<(Self, Task<Message>)> {
         let steam_web_api_entry = keyring::Entry::new("lxcomm-steam", "steam-web-api")?;
         let steam_password_entry = keyring::Entry::new("lxcomm-steam", "steam-password")?;
 
@@ -664,8 +679,10 @@ impl App {
             combo_box::State::new(save.profiles.values().map(|p| p.name.clone()).collect());
 
         let mut app = App {
-            api_key: SecretString::default(),
+            #[cfg(target_os = "linux")]
             dbus_connection: connection,
+
+            api_key: SecretString::default(),
             current_page: Default::default(),
             modal_stack: Vec::new(),
             browsing_page: 0,
@@ -1135,6 +1152,7 @@ impl App {
                 self.completed_downloads.insert(id);
                 self.scan_downloads();
 
+                #[cfg(target_os = "linux")]
                 if self.ongoing_downloads.is_empty() && self.download_queue.is_empty() {
                     if self.settings.notify_on_download_complete {
                         let connection = zbus::Connection::from(self.dbus_connection.clone());
@@ -1607,10 +1625,12 @@ impl App {
                 self.modal_stack.push(AppModal::AddToProfileRequest);
             }
 
+            #[cfg(target_os = "linux")]
             Message::DbusError(err) => {
                 eprintln!("Unrecoverable dbus error: {err:?}");
                 return iced::window::get_oldest().and_then(iced::window::close);
             }
+
             Message::GainFocus => {
                 return iced::window::get_oldest().and_then(|id| {
                     Task::batch([
@@ -1910,9 +1930,9 @@ impl App {
                                         .link(child_id)])
                                         .on_link_click(Message::SetViewingItem),
                                         if self.item_downloaded(child_id) {
-                                            fontawesome::check()
+                                            symbols::check()
                                         } else {
-                                            fontawesome::xmark()
+                                            symbols::xmark()
                                         },
                                     ]
                                 } else {
@@ -2131,7 +2151,7 @@ impl App {
                 LabeledFrame::new(
                     "Game Directory",
                     row![
-                        button(fontawesome::folder()).on_press(Message::LoadPickGameDirectory),
+                        button(symbols::folder()).on_press(Message::LoadPickGameDirectory),
                         text_input(
                             "/path/to/XCom2-WarOfTheChosen",
                             &self
@@ -2148,7 +2168,7 @@ impl App {
                     "Save Directory",
                     tooltip(
                         row![
-                            button(fontawesome::folder()).on_press(Message::LoadPickGameDirectory),
+                            button(symbols::folder()).on_press(Message::LoadPickSaveDirectory),
                             text_input(
                                 "/path/to/Documents/My Games/XCOM2 War of the Chosen/XComGame/SaveData",
                                 &self
@@ -2169,7 +2189,7 @@ impl App {
                 LabeledFrame::new(
                     "Launch Command",
                     row![
-                        button(fontawesome::folder()).on_press(Message::LoadPickLaunchCommand),
+                        button(symbols::folder()).on_press(Message::LoadPickLaunchCommand),
                         text_input(
                             "ex: /usr/bin/xdg-open",
                             self.save.launch_command.as_deref().unwrap_or_default(),
@@ -2185,7 +2205,7 @@ impl App {
                                 .on_input(move |k| Message::LoadEditArgKey(i, k)),
                             text_input("value (required)", r)
                                 .on_input(move |v| Message::LoadEditArgValue(i, v)),
-                            button(fontawesome::xmark())
+                            button(symbols::xmark())
                                 .style(button::danger)
                                 .on_press(Message::LoadRemoveLaunchArgs(i))
                                 .width(Shrink)
@@ -2226,7 +2246,7 @@ impl App {
             grid = grid.push(iced_aw::grid_row!(
                 checkbox("", item.selected)
                     .on_toggle(|toggle| Message::LibraryToggleItem(*id, toggle)),
-                button(fontawesome::eye()).on_press(Message::SetViewingItem(*id)),
+                button(symbols::eye()).on_press(Message::SetViewingItem(*id)),
                 rich_text([span(id).link(id.to_string())]).on_link_click(|link: String| {
                     println!("link {link} was clicked");
                     Message::None
@@ -2744,6 +2764,7 @@ impl App {
 
     fn subscription(&self) -> Subscription<Message> {
         iced::Subscription::batch([
+            #[cfg(target_os = "linux")]
             iced::advanced::subscription::from_recipe(ConnectionRecipe(
                 self.dbus_connection.clone(),
             )),
@@ -2948,7 +2969,9 @@ impl App {
     }
 }
 
+#[cfg(target_os = "linux")]
 struct ConnectionRecipe(zbus::blocking::Connection);
+#[cfg(target_os = "linux")]
 impl iced::advanced::subscription::Recipe for ConnectionRecipe {
     type Output = Message;
     fn hash(&self, state: &mut iced::advanced::subscription::Hasher) {
@@ -3038,10 +3061,12 @@ fn modal_box<'a>(
 
 // At the moment, only for allowing one instance to be open at a time
 // Doubles as a showcase of how to set up a dbus connection/service for iced
+#[cfg(target_os = "linux")]
 struct AppSessionInterface {
     sender: Sender<Message>,
 }
 
+#[cfg(target_os = "linux")]
 #[zbus::interface(name = "io.github.phantomshift.lxcomm")]
 impl AppSessionInterface {
     async fn focus_window(&mut self) {
@@ -3053,36 +3078,64 @@ impl AppSessionInterface {
 
 // #[tokio::main]
 fn main() -> eyre::Result<()> {
+    // Potential TODO - Find a more graceful way of solving this cross-platform
+    // Also be more consistent about target_os = "windows" vs not(target_os = "linux") and vice versa
+    // (I probably won't support Apple anyways, you guys can go have fun gaming on that)
+    #[cfg(target_os = "windows")]
+    let lock = {
+        let lock = single_instance::SingleInstance::new("LXCOMM_SESSION_LOCK");
+        if let Ok(lock) = lock
+            && lock.is_single()
+        {
+            lock
+        } else {
+            rfd::MessageDialog::new()
+                .set_buttons(rfd::MessageButtons::Ok)
+                .set_level(rfd::MessageLevel::Error)
+                .set_title("Already Open")
+                .set_description("There is already an instance of LXCOMM open.")
+                .show();
+            return Ok(());
+        }
+    };
+
     let result = {
         let icon = iced::window::icon::from_file_data(
             include_bytes!("../assets/lxcomm_icon64.png"),
             Some(iced::advanced::graphics::image::image_rs::ImageFormat::Png),
         )?;
 
-        let connection = zbus::blocking::Connection::session()?;
-        if let Err(err) = connection.request_name(APP_SESSION_NAME) {
-            match err {
-                zbus::Error::NameTaken => {
-                    connection
-                        .call_method(
-                            Some(APP_SESSION_NAME),
-                            APP_SESSION_PATH,
-                            Some(APP_SESSION_NAME),
-                            "FocusWindow",
-                            &"",
-                        )
-                        .expect("failed to call focus method");
-                    return Ok(());
+        #[cfg(target_os = "linux")]
+        let connection = {
+            let connection = zbus::blocking::Connection::session()?;
+            if let Err(err) = connection.request_name(APP_SESSION_NAME) {
+                match err {
+                    zbus::Error::NameTaken => {
+                        connection
+                            .call_method(
+                                Some(APP_SESSION_NAME),
+                                APP_SESSION_PATH,
+                                Some(APP_SESSION_NAME),
+                                "FocusWindow",
+                                &"",
+                            )
+                            .expect("failed to call focus method");
+                        return Ok(());
+                    }
+                    err => return Err(eyre::Error::new(err)),
                 }
-                err => return Err(eyre::Error::new(err)),
             }
-        }
+            connection
+        };
 
         // Based on this post for passing initial state
         // https://discourse.iced.rs/t/solved-new-boot-trait-no-longer-able-to-use-a-capturing-closure-to-initialize-application-state/1012/6
         // Note that this does make the application incompatible
         // with iced's native debugging tool comet since it supposedly calls boot for re-initializing from the start.
+        #[cfg(target_os = "linux")]
         let once_boot = RefCell::new(Some(App::boot(connection)?));
+        #[cfg(not(target_os = "linux"))]
+        let once_boot = RefCell::new(Some(App::boot()?));
         Ok((once_boot, icon))
     };
 
@@ -3113,14 +3166,18 @@ fn main() -> eyre::Result<()> {
         ..Default::default()
     };
 
-    iced::application(boot, App::update, App::view)
+    let mut application = iced::application(boot, App::update, App::view)
         .window(window_settings)
         .title("Linux XCOM2 Mod Manager")
         .theme(App::theme)
         .subscription(App::subscription)
         .exit_on_close_request(false)
-        .font(iced_aw::temp_fonts::REQUIRED_FONT_BYTES)
-        .font(iced_fonts::FONTAWESOME_FONT_BYTES)
-        .run()?;
+        .font(iced_aw::temp_fonts::REQUIRED_FONT_BYTES);
+
+    // TODO - Figure out why icon fonts don't render properly on Windows.
+    #[cfg(not(target_os = "windows"))]
+    let application = application.font(iced_fonts::FONTAWESOME_FONT_BYTES);
+
+    application.run()?;
     Ok(())
 }

@@ -99,9 +99,14 @@ pub struct State {
 }
 
 pub fn which_steamcmd(given: &Option<PathBuf>) -> Result<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let command = "steamcmd.exe";
+    #[cfg(not(target_os = "windows"))]
+    let command = "steamcmd";
+
     let path = given
         .to_owned()
-        .or_else(|| which("steamcmd").ok())
+        .or_else(|| which(command).ok())
         .ok_or(Error::MissingExecutable)?;
 
     if let Ok(true) = std::fs::exists(&path) {
@@ -110,7 +115,7 @@ pub fn which_steamcmd(given: &Option<PathBuf>) -> Result<PathBuf> {
     Err(Error::MissingExecutable)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(not(target_os = "windows"))]
 /// Due to prominent issues with steamcmd in non-interactive sessions,
 /// we try to unbuffer the output if possible (based on [this tip](https://github.com/ValveSoftware/Source-1-Games/issues/1929#issuecomment-1341353626)).
 /// Relies on expect's `unbuffer` with coreutils `stdbuf` as a fallback.
@@ -132,9 +137,14 @@ fn steamcmd_command(given: &Option<PathBuf>) -> Result<std::process::Command> {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
 fn steamcmd_command(given: &Option<PathBuf>) -> Result<std::process::Command> {
-    Ok(std::process::Command::new(which_steamcmd(given)?))
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let mut command = std::process::Command::new(which_steamcmd(given)?);
+    // Suppress console
+    command.creation_flags(CREATE_NO_WINDOW);
+    Ok(command)
 }
 
 fn steamcmd_command_async(given: &Option<PathBuf>) -> Result<tokio::process::Command> {
