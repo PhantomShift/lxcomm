@@ -108,9 +108,9 @@ pub fn setup_background_resolver() -> impl Stream<Item = Message> {
             }
 
             if !unresolved.is_empty()
-                && let Some(client) = &client
+                && let Some(current_client) = &client
             {
-                match crate::get_mod_details(client.clone(), &unresolved).await {
+                match crate::get_mod_details(current_client.clone(), &unresolved).await {
                     Ok(files) => {
                         if let Err(err) = output
                             .send(Message::BackgroundResolverMessage(
@@ -125,6 +125,11 @@ pub fn setup_background_resolver() -> impl Stream<Item = Message> {
                     }
                     Err(err) => {
                         eprintln!("Error resolving files: {err:?}");
+                        // TODO: Properly grab error code
+                        if err.to_string().contains("401 Unauthorized") {
+                            client = None;
+                            eprintln!("The API key the background resolver was sent does not appear to be valid.");
+                        }
                     }
                 }
             }
