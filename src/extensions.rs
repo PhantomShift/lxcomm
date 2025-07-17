@@ -1,4 +1,3 @@
-use serde::Serialize;
 use steam_rs;
 
 pub trait DetailsExtension {
@@ -21,6 +20,7 @@ impl DetailsExtension for steam_rs::published_file_service::query_files::File {
 
 #[cfg(target_os = "linux")]
 pub mod zbus_ext {
+    use serde::Serialize;
     use zbus::zvariant::SerializeDict;
 
     #[derive(Debug, Default, Serialize, zbus::zvariant::Type)]
@@ -184,5 +184,4 @@ pub mod zbus_ext {
 
         connection.send_notification(params).await.unwrap();
     }
-
 }

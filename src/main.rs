@@ -1175,7 +1175,7 @@ impl App {
                                     body: "All downloads in the queue have completed.".to_string(),
                                     hints: NotificationHint {
                                         category:
-                                            extensions::NotificationCategory::TransferComplete,
+                                            extensions::zbus_ext::NotificationCategory::TransferComplete,
                                         resident: true,
                                         sound_name,
                                         ..Default::default()

@@ -37,7 +37,7 @@ which = "8.0.0"
 [target.'cfg(windows)'.dependencies]
 single-instance = "0.3.3"
 
-[target.'cfg(linux)'.dependencies]
+[target.'cfg(not(windows))'.dependencies]
 zbus = "5.7.1"
 iced_fonts = { git = "https://github.com/Redhawk18/iced_fonts.git", version = "0.2.0", features = ["fontawesome"] }
 

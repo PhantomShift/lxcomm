@@ -4,6 +4,7 @@ pub mod symbols {
     pub use fontawesome::eye;
     pub use fontawesome::folder;
     pub use fontawesome::xmark;
+    use iced_fonts::fontawesome;
 }
 
 #[cfg(target_os = "windows")]
