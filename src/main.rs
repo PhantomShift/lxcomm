@@ -660,6 +660,11 @@ impl App {
                 steam_password_entry.get_password().ok().unwrap_or_default(),
             ),
             download_dir: PathBuf::from(&settings.download_directory),
+            command_path: settings
+                .steamcmd_command_path
+                .is_empty()
+                .not()
+                .then_some(settings.steamcmd_command_path.clone().into()),
             // Always assume it is cached and then elevate if it isn't
             is_cached: true,
             ..Default::default()
@@ -1656,9 +1661,16 @@ impl App {
                 } else if let Err(err) = self.credentials.steam_password.delete_credential() {
                     eprintln!("Error deleting password entry: {err:?}");
                 }
-                if !self.settings.steam_webapi_save_api_key
-                    && let Err(err) = self.credentials.steam_web_api.delete_credential()
-                {
+
+                if self.settings.steam_webapi_save_api_key {
+                    if let Err(err) = self
+                        .credentials
+                        .steam_web_api
+                        .set_password(self.api_key.expose_secret())
+                    {
+                        eprintln!("Error saving web api key entry: {err:?}");
+                    }
+                } else if let Err(err) = self.credentials.steam_web_api.delete_credential() {
                     eprintln!("Error deleting api key entry: {err:?}");
                 }
 
