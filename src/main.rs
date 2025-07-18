@@ -533,6 +533,9 @@ struct AppSettingsDepends(Vec<&'static str>);
 #[derive(Debug, Reflect)]
 struct AppSettingsConflicts(Vec<&'static str>);
 
+#[derive(Debug, Reflect)]
+struct AppSettingsTimePreview;
+
 #[derive(Debug, Reflect, PartialEq, Serialize, Deserialize, Clone)]
 #[serde(default)]
 struct AppSettings {
@@ -588,6 +591,7 @@ By default, this is set to X2WOTCCommunityHighlander's ID since it is a common d
     steam_webapi_save_api_key: bool,
     #[reflect(@AppSettingsLabel("Steam Web API: Query Cache Lifetime (seconds)"))]
     #[reflect(@AppSettingsUnsignedRange { min: 0, max: 604800 })]
+    #[reflect(@AppSettingsTimePreview)]
     steam_webapi_cache_lifetime: u32,
 }
 
@@ -2024,9 +2028,11 @@ impl App {
             let display = field
                 .get_attribute::<AppSettingsLabel>()
                 .expect("label should be set");
+            let description = field.get_attribute::<AppSettingsDescription>();
             let label = tooltip(
-                text(display.0),
-                match field.get_attribute::<AppSettingsDescription>() {
+                row![text(display.0).align_y(Vertical::Center).height(Fill),]
+                    .push_maybe(description.is_some().then_some(text("?").size(12))),
+                match description {
                     Some(description) => container(text(description.0))
                         .style(container::rounded_box)
                         .padding(16),
@@ -2054,6 +2060,7 @@ impl App {
                         .get_field::<String>(name)
                         .expect("string input should only be set for string values"),
                 )
+                .width(600)
                 .on_input(|new| AppSettingEdit::String(name, new).into())
                 .into(),
                 AppSettingEditor::SecretInput => text_input(
@@ -2063,33 +2070,47 @@ impl App {
                         .expect("secret input should only be set for string values"),
                 )
                 .secure(true)
+                .width(600)
                 .on_input(|new| AppSettingEdit::Secret(name, new).into())
                 .into(),
-                AppSettingEditor::BoolToggle => widget::checkbox(
-                    "Enabled",
-                    *settings
-                        .get_field::<bool>(name)
-                        .expect("bool toggle should only be set for bool values"),
+                AppSettingEditor::BoolToggle => container(
+                    widget::toggler(
+                        *settings
+                            .get_field::<bool>(name)
+                            .expect("bool toggle should only be set for bool values"),
+                    )
+                    .on_toggle(|toggled| AppSettingEdit::Bool(name, toggled).into()),
                 )
-                .on_toggle(|toggled| AppSettingEdit::Bool(name, toggled).into())
+                .center_y(Fill)
                 .into(),
-                AppSettingEditor::NumberInput => text_input(
-                    AppSettings::default()
+                AppSettingEditor::NumberInput => {
+                    let value = settings
                         .get_field::<u32>(name)
-                        .expect("number input should only be set for u32 values")
-                        .to_string()
-                        .as_str(),
-                    settings
-                        .get_field::<u32>(name)
-                        .expect("number input should only be set for u32 values")
-                        .to_string()
-                        .as_str(),
-                )
-                .on_input(|new| AppSettingEdit::Number(name, new).into())
-                .into(),
+                        .expect("number input should only be set for u32 values");
+                    let editor = text_input(
+                        AppSettings::default()
+                            .get_field::<u32>(name)
+                            .expect("number input should only be set for u32 values")
+                            .to_string()
+                            .as_str(),
+                        value.to_string().as_str(),
+                    )
+                    .width(200)
+                    .on_input(|new| AppSettingEdit::Number(name, new).into());
+
+                    if field.get_attribute::<AppSettingsTimePreview>().is_some() {
+                        let preview =
+                            humantime::format_duration(Duration::from_secs(*value as u64));
+                        row![text!("({preview}) ").height(Fill).center(), editor,].into()
+                    } else {
+                        editor.into()
+                    }
+                }
             };
 
-            row([label, horizontal_space().into(), editor]).into()
+            row([label, horizontal_space().into(), editor])
+                .height(32)
+                .into()
         }));
 
         let col = col.push(vertical_space());
@@ -2101,6 +2122,7 @@ impl App {
                 (self.settings != self.settings_editing).then_some(SettingsMessage::Save.into())
             )
         ])
+        .padding(16)
         .into()
     }
 
