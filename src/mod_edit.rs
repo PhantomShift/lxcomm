@@ -4,11 +4,14 @@ use std::{
 };
 
 use iced::{
-    Element,
+    Element, Font,
     Length::Fill,
     Task,
-    widget::{button, column, row, scrollable, text, text_editor, text_input, vertical_rule},
+    widget::{
+        button, column, container, row, scrollable, text, text_editor, text_input, vertical_rule,
+    },
 };
+use similar::ChangeTag;
 
 use crate::{App, Message, PROFILES_DIR, files};
 
@@ -30,6 +33,7 @@ pub enum EditorMessage {
     SaveAll,
     Create,
     BufferEdit(String, text_editor::Action),
+    SetPage(EditorPage),
     #[default]
     None,
 }
@@ -40,14 +44,19 @@ impl From<EditorMessage> for Message {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub enum EditorPage {
+    #[default]
+    IniEditor,
+    Diff,
+}
+
 // TODO - figure out per item stuff
 #[derive(Default)]
 pub struct Editor {
     pub new_config_name: String,
     pub current_root: Option<PathBuf>,
     pub current_file: Option<String>,
-    // TODO: cache comparison
-    pub comparing: bool,
     /// Settings that came as part of the original file
     pub original_buffers: HashMap<String, String>,
     /// Settings created by users
@@ -56,6 +65,7 @@ pub struct Editor {
     pub saved_buffers: HashMap<String, String>,
     /// The transient state of the settings being edited
     pub edit_buffers: HashMap<String, text_editor::Content>,
+    pub page: EditorPage,
 }
 
 impl Editor {
@@ -86,7 +96,12 @@ impl Editor {
     pub fn update(&mut self, message: EditorMessage) -> Option<Task<Message>> {
         match message {
             EditorMessage::NewConfigEdit(s) => self.new_config_name = s,
-            EditorMessage::Select(name) => self.current_file = Some(name),
+            EditorMessage::Select(name) => {
+                if self.current_file.as_ref() != Some(&name) {
+                    self.current_file = Some(name);
+                    self.page = EditorPage::IniEditor;
+                }
+            }
             EditorMessage::BufferEdit(name, action) => {
                 if !self.edit_buffers.contains_key(&name) {
                     eprintln!("Attempt to edit non-existent buffer for file {name}",);
@@ -171,6 +186,7 @@ impl Editor {
                 self.custom_buffers.clear();
                 self.saved_buffers.clear();
                 self.edit_buffers.clear();
+                self.page = EditorPage::IniEditor;
 
                 let profile_path = PROFILES_DIR
                     .join(profile_id.to_string())
@@ -263,6 +279,7 @@ impl Editor {
 
                 self.current_root = Some(profile_path);
             }
+            EditorMessage::SetPage(page) => self.page = page,
             EditorMessage::None => (),
         }
 
@@ -328,6 +345,7 @@ impl Editor {
 
         let editor = self.current_file.as_ref().and_then(|name| {
             self.edit_buffers.get(name).map(|content| {
+                let original_buffer = self.original_buffers.get(name);
                 let delete = self.get_delete_action(name);
                 let can_delete = {
                     match &delete {
@@ -351,14 +369,59 @@ impl Editor {
                             ),
                         button("Save")
                             .style(button::success)
-                            .on_press(EditorMessage::Save(name.clone()).into())
+                            .on_press(EditorMessage::Save(name.clone()).into()),
+                        match self.page {
+                            EditorPage::IniEditor => button("View Diff").on_press_maybe(
+                                original_buffer
+                                    .is_some()
+                                    .then_some(EditorMessage::SetPage(EditorPage::Diff).into())
+                            ),
+                            EditorPage::Diff => button("View INI")
+                                .on_press(EditorMessage::SetPage(EditorPage::IniEditor).into()),
+                        },
                     ],
-                    text_editor(content)
-                        .on_action(|action| EditorMessage::BufferEdit(name.clone(), action).into())
-                        // Potential TODO: Add settings for theme (including application-level)
-                        .highlight("ini", iced::highlighter::Theme::Leet)
-                        .font(iced::font::Font::MONOSPACE)
-                        .height(Fill)
+                    match self.page {
+                        EditorPage::IniEditor => container(
+                            text_editor(content)
+                                .on_action(
+                                    |action| EditorMessage::BufferEdit(name.clone(), action).into()
+                                )
+                                // Potential TODO: Add settings for theme (including application-level)
+                                .highlight("ini", iced::highlighter::Theme::Leet)
+                                .font(Font::MONOSPACE)
+                                .wrapping(text::Wrapping::WordOrGlyph)
+                                .height(Fill)
+                        ),
+                        EditorPage::Diff => {
+                            if let Some(original) = original_buffer {
+                                let new = content.text();
+                                let diff =
+                                    similar::TextDiff::from_lines(original.as_str(), new.as_str());
+                                container(scrollable(column(diff.iter_all_changes().map(
+                                    |change| {
+                                        let style = match change.tag() {
+                                            ChangeTag::Equal => container::bordered_box,
+                                            ChangeTag::Delete => container::danger,
+                                            ChangeTag::Insert => container::success,
+                                        };
+                                        container(
+                                            text(change.to_string())
+                                                .font(Font::MONOSPACE)
+                                                .wrapping(text::Wrapping::WordOrGlyph),
+                                        )
+                                        .width(Fill)
+                                        .style(style)
+                                        .into()
+                                    },
+                                ))))
+                            } else {
+                                container("you shouldn't be here...")
+                            }
+                            .style(container::rounded_box)
+                            .padding(4)
+                            .width(Fill)
+                        }
+                    },
                 ]
             })
         });
