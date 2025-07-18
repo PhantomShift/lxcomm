@@ -3200,7 +3200,7 @@ fn main() -> eyre::Result<()> {
         ..Default::default()
     };
 
-    let mut application = iced::application(boot, App::update, App::view)
+    let application = iced::application(boot, App::update, App::view)
         .window(window_settings)
         .title("Linux XCOM2 Mod Manager")
         .theme(App::theme)

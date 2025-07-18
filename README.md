@@ -15,7 +15,7 @@ In no particular order:
 - [x] Option to log out of steamcmd on exit (default command: quit)
 - [ ] Text editor + diffing for per-profile mod ini settings
 - [x] On detailed view open, resolve unknown dependencies in the background
-- [ ] Filter library with option for [fuzzy finding](https://github.com/Blakeinstein/fuse-rust)
+- [x] Filter library with option for [fuzzy finding](https://github.com/Blakeinstein/fuse-rust)
 - [ ] Check for updates without having to invoke download (build manifest file from scratch and then try running `steamcmd +workshop_status`?)
 - [ ] Automatically find game installations and folders (using [walkdir](https://github.com/BurntSushi/walkdir)?)
 - [ ] Options for ranking search results in browsing
