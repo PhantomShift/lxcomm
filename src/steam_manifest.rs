@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ManifestWorkshopItem {
-    pub size: u32,
+    pub size: u64,
     #[serde(rename = "timeupdated")]
-    pub time_updated: u32,
+    pub time_updated: u64,
     pub manifest: String,
 }
 
@@ -14,17 +14,17 @@ pub struct ManifestWorkshopItem {
 pub struct ManifestWorkshopItemDetails {
     pub manifest: String,
     #[serde(rename = "timeupdated")]
-    pub time_updated: u32,
+    pub time_updated: u64,
     #[serde(rename = "timetouched")]
-    pub time_touched: u32,
+    pub time_touched: u64,
     #[serde(rename = "BytesDownloaded")]
     #[serde(default)]
-    pub bytes_downloaded: u32,
+    pub bytes_downloaded: u64,
     #[serde(rename = "BytesToDownload")]
     #[serde(default)]
-    pub bytes_to_download: u32,
+    pub bytes_to_download: u64,
     #[serde(rename = "latest_timeupdated")]
-    pub latest_time_updated: u32,
+    pub latest_time_updated: u64,
     #[serde(rename = "latest_manifest")]
     pub latest_manifest: String,
 }
@@ -34,16 +34,16 @@ pub struct ManifestWorkshopItemDetails {
 #[cfg_attr(debug_assertions, serde(deny_unknown_fields))]
 pub struct AppWorkshopManifest {
     #[serde(rename = "appid")]
-    pub app_id: u32,
-    pub size_on_disk: u32,
+    pub app_id: u64,
+    pub size_on_disk: u64,
     pub needs_update: bool,
     pub needs_download: bool,
-    pub time_last_updated: u32,
-    pub time_last_app_ran: u32,
+    pub time_last_updated: u64,
+    pub time_last_app_ran: u64,
     #[serde(rename = "LastBuildID")]
-    pub last_build_id: u32,
-    pub workshop_items_installed: BTreeMap<u32, ManifestWorkshopItem>,
-    pub workshop_item_details: BTreeMap<u32, ManifestWorkshopItemDetails>,
+    pub last_build_id: u64,
+    pub workshop_items_installed: BTreeMap<u64, ManifestWorkshopItem>,
+    pub workshop_item_details: BTreeMap<u64, ManifestWorkshopItemDetails>,
 }
 
 #[test]
