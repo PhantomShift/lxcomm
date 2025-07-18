@@ -1,7 +1,11 @@
-use std::{path::PathBuf, process::ExitStatusError, string::FromUtf8Error, sync::Arc};
+use std::{
+    collections::BTreeMap, path::PathBuf, process::ExitStatusError, string::FromUtf8Error,
+    sync::Arc,
+};
 
 use bstr::{BString, ByteSlice};
 use iced::futures::{SinkExt, Stream, channel::mpsc::Sender};
+use steam_rs::published_file_service::query_files::File;
 use thiserror::Error;
 use tokio::{
     io::{AsyncBufReadExt, BufReader, Lines},
@@ -12,7 +16,11 @@ use which::which;
 
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::{Message, X2_WOTCCOMMUNITY_HIGHLANDER_ID, XCOM_APPID, files};
+use crate::{
+    Message, X2_WOTCCOMMUNITY_HIGHLANDER_ID, XCOM_APPID,
+    files::{self, Cache},
+    steam_manifest::{AppWorkshopManifest, ManifestWorkshopItem, ManifestWorkshopItemDetails},
+};
 
 /// Based on the documentation gathered by the LinuxGSM project.
 /// https://docs.linuxgsm.com/steamcmd/errors
@@ -352,7 +360,25 @@ impl State {
     /// steamcmd will not check status if you don't (successfully) download something first.
     /// X2WOTCCommunityHighlander was chosen as the default since it's such a common dependency
     /// that it might as well come pre-installed.
-    pub async fn check_updates(&self) -> Result<Vec<u32>> {
+    pub async fn check_updates(&self, ids: Vec<u32>, cache: Cache) -> Result<Vec<u32>> {
+        let manifest_path = files::get_workshop_manifest_path(&self.download_dir);
+
+        // Cancel if the user hasn't even downloaded any items yet
+        match manifest_path.parent() {
+            Some(parent) if !tokio::fs::try_exists(parent).await? => return Ok(Vec::new()),
+            None => return Ok(Vec::new()),
+            _ => (),
+        }
+
+        if tokio::fs::try_exists(&manifest_path).await? {
+            tokio::fs::remove_file(&manifest_path).await?;
+        }
+
+        let mut manifest_file = std::fs::File::create_new(&manifest_path)?;
+        let manifest = build_manifest(ids, cache);
+        keyvalues_serde::to_writer_with_key(&mut manifest_file, &manifest, "AppWorkshop")
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+
         let needs_update = Vec::new();
 
         let mut command = steamcmd_command_async(&self.command_path)?;
@@ -370,6 +396,22 @@ impl State {
         command.args(["+workshop_status", &XCOM_APPID.to_string()]);
 
         command.arg("+quit");
+
+        let buf_output = Arc::new(Mutex::new(Vec::new()));
+        let (process, mut lines) = spawn_buffered(command)?;
+        let captured = self.clone();
+        let buf_clone = buf_output.clone();
+        tokio::spawn(async move {
+            while let Ok(Some(line)) = lines.next_line().await {
+                buf_clone.lock().await.push(line.clone());
+                captured.send_log(line).await;
+            }
+        });
+
+        let output = process.wait_with_output().await?;
+
+        let output = buf_output.lock().await.join("\n");
+        println!("Output: {output}");
 
         Ok(needs_update)
     }
@@ -391,4 +433,62 @@ pub fn setup_logging() -> impl Stream<Item = Message> {
             }
         }
     })
+}
+
+pub fn build_manifest(library_ids: Vec<u32>, cache: Cache) -> AppWorkshopManifest {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("now should always be after UNIX_EPOCH");
+
+    let info = library_ids
+        .into_iter()
+        .filter_map(|id| cache.get_details(id).map(|details| (id as u64, details)))
+        .collect::<BTreeMap<u64, Arc<File>>>();
+
+    let size_on_disk: u64 = info
+        .iter()
+        .filter_map(|(_, details)| details.file_size.parse::<u64>().ok())
+        .sum();
+
+    let (workshop_items_installed, workshop_item_details): (
+        BTreeMap<u64, ManifestWorkshopItem>,
+        BTreeMap<u64, ManifestWorkshopItemDetails>,
+    ) = info
+        .iter()
+        .filter_map(|(id, details)| {
+            let manifest = details.hcontent_file.clone()?;
+            let bytes_downloaded = details.file_size.parse::<u64>().ok()?;
+            let latest_manifest = details.hcontent_file.clone()?;
+
+            let item = ManifestWorkshopItem {
+                size: bytes_downloaded,
+                time_updated: 0,
+                manifest: manifest.clone(),
+            };
+
+            let details = ManifestWorkshopItemDetails {
+                manifest,
+                time_updated: 0,
+                time_touched: now.as_secs(),
+                bytes_downloaded,
+                bytes_to_download: 0,
+                latest_time_updated: 0,
+                latest_manifest,
+            };
+
+            Some(((*id, item), (*id, details)))
+        })
+        .unzip();
+
+    AppWorkshopManifest {
+        app_id: XCOM_APPID as u64,
+        size_on_disk,
+        needs_update: false,
+        needs_download: false,
+        time_last_updated: 0,
+        time_last_app_ran: 0,
+        last_build_id: 0,
+        workshop_items_installed,
+        workshop_item_details,
+    }
 }

@@ -290,6 +290,8 @@ pub enum Message {
     SteamCMDDownloadCompletedClear(Vec<u32>),
     SteamCMDDownloadErrorClear(Vec<u32>),
     DownloadCancelRequested(u32),
+    SteamCMDCheckUpdateRequested,
+    SteamCMDCheckUpdateCompleted(Vec<u32>),
 
     Settings(SettingsMessage),
     ModEditor(EditorMessage),
@@ -1220,6 +1222,23 @@ impl App {
                 for id in ids {
                     self.errorred_downloads.remove(&id);
                 }
+            }
+            Message::SteamCMDCheckUpdateRequested => {
+                let ids = self.library.as_ref().keys().copied().collect::<Vec<_>>();
+                let cache = self.file_cache.clone();
+                let state = self.steamcmd_state.clone();
+
+                return Task::future(async move {
+                    match state.check_updates(ids, cache).await {
+                        Err(err) => {
+                            Message::display_error("Error Checking Updates", format!("{err:#?}"))
+                        }
+                        Ok(ids) => Message::SteamCMDCheckUpdateCompleted(ids),
+                    }
+                });
+            }
+            Message::SteamCMDCheckUpdateCompleted(ids) => {
+                println!("The following ids need to be updated: {ids:#?}");
             }
 
             Message::LibraryToggleAll(toggle) => {
@@ -2263,6 +2282,7 @@ impl App {
                 row![
                     button("Build").on_press(Message::LoadPrepareProfile(true)),
                     button("Launch").on_press(Message::LoadLaunchGame),
+                    // button("Text Check Update").on_press(Message::SteamCMDCheckUpdateRequested)
                 ].spacing(8),
             ]
             .padding(16),
