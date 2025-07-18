@@ -32,7 +32,7 @@ use iced::{
     widget::{
         self, Stack, button, checkbox, column, combo_box, container, horizontal_space, image,
         markdown, opaque, progress_bar, rich_text, row, scrollable, span, stack, text, text_editor,
-        text_input, tooltip, vertical_rule, vertical_space,
+        text_input, toggler, tooltip, vertical_rule, vertical_space,
     },
 };
 use iced_aw::{card, widget::LabeledFrame};
@@ -304,6 +304,8 @@ pub enum Message {
     LibraryAddToProfileConfirm(bool),
     LibraryDeleteRequest,
     LibraryDeleteConfirm,
+    LibraryFilterUpdateQuery(String),
+    LibraryFilterToggleFuzzy(bool),
     ProfileAddPressed,
     ProfileAddEdited(String),
     ProfileAddCompleted(bool),
@@ -1218,8 +1220,7 @@ impl App {
 
             Message::LibraryToggleAll(toggle) => {
                 self.library
-                    .as_mut()
-                    .values_mut()
+                    .iter_filtered_mut()
                     .for_each(|item| item.selected = toggle);
             }
             Message::LibraryToggleItem(id, toggle) => {
@@ -1289,6 +1290,15 @@ impl App {
                         .map(|item| Task::done(Message::DeleteRequested(item.id))),
                 );
             }
+            Message::LibraryFilterUpdateQuery(query) => {
+                self.library.filter_query = query;
+                self.library.update_selected_filtered();
+            }
+            Message::LibraryFilterToggleFuzzy(toggle) => {
+                self.library.filter_fuzzy = toggle;
+                self.library.update_selected_filtered();
+            }
+
             Message::ProfileAddPressed => {
                 self.profile_add_name = String::new();
                 self.modal_stack.push(AppModal::ProfileAddRequest);
@@ -2243,8 +2253,8 @@ impl App {
             .row_height(Shrink)
             .row_spacing(8);
 
-        let all_selected = self.library.as_ref().values().all(|item| item.selected);
-        let some_selected = self.library.as_ref().values().any(|item| item.selected);
+        let all_selected = self.library.iter_filtered().all(|item| item.selected);
+        let some_selected = self.library.iter_filtered().any(|item| item.selected);
 
         grid = grid.push(iced_aw::grid_row!(
             checkbox("", all_selected).on_toggle(Message::LibraryToggleAll),
@@ -2254,11 +2264,12 @@ impl App {
             text("Path")
         ));
 
-        for (id, item) in self.library.as_ref().iter() {
+        for item in self.library.iter_filtered() {
+            let id = item.id;
             grid = grid.push(iced_aw::grid_row!(
                 checkbox("", item.selected)
-                    .on_toggle(|toggle| Message::LibraryToggleItem(*id, toggle)),
-                button(symbols::eye()).on_press(Message::SetViewingItem(*id)),
+                    .on_toggle(move |toggle| Message::LibraryToggleItem(id, toggle)),
+                button(symbols::eye()).on_press(Message::SetViewingItem(id)),
                 rich_text([span(id).link(id.to_string())]).on_link_click(|link: String| {
                     println!("link {link} was clicked");
                     Message::None
@@ -2285,6 +2296,17 @@ impl App {
             ]
             .spacing(6)
             .height(32),
+            row![
+                tooltip(
+                    toggler(self.library.filter_fuzzy).on_toggle(Message::LibraryFilterToggleFuzzy),
+                    container("Fuzzy Matching")
+                        .style(container::rounded_box)
+                        .padding(16),
+                    tooltip::Position::Bottom,
+                ),
+                text_input("Filter", &self.library.filter_query)
+                    .on_input(Message::LibraryFilterUpdateQuery),
+            ],
             container(
                 scrollable(grid)
                     .direction(scrollable::Direction::Both {

@@ -1657,6 +1657,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fuse-rust"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf29d70efdbafa7d2dc40083514b205c8d8885fba815778acc57100a9029200c"
+dependencies = [
+ "rayon",
+]
+
+[[package]]
 name = "futures"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3019,6 +3028,7 @@ dependencies = [
  "dircpy",
  "etcetera",
  "eyre",
+ "fuse-rust",
  "iced",
  "iced_aw",
  "iced_fonts 0.2.0 (git+https://github.com/Redhawk18/iced_fonts.git)",
