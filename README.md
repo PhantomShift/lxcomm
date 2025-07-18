@@ -23,4 +23,4 @@ In no particular order:
 
 ## License
 
-lxcomm is dual-licensed under [MIT](LICENSE-MIT) and [Apache License 2.0](LICENSE-APACHE).
+lxcomm is dual-licensed under [MIT](LICENSE-MIT) or [Apache License 2.0](LICENSE-APACHE) at your choice.
