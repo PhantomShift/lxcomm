@@ -1835,7 +1835,7 @@ impl App {
                             horizontal_space(),
                             button("View Save").on_press(Message::ProfileViewSaveRequested(profile.id)),
                             tooltip(
-                                button("Import Save").on_press(Message::ProfileImportSaveRequested(profile.id)),
+                                button("Import Save").style(button::danger).on_press(Message::ProfileImportSaveRequested(profile.id)),
                                 container("Note that this will overwrite any save data currently in the profile.")
                                     .padding(16)
                                     .style(container::rounded_box),
@@ -1843,6 +1843,7 @@ impl App {
                             ),
                             // TODO - add confirmation
                             button("Delete Profile")
+                                .style(button::danger)
                                 .on_press(Message::ProfileDeletePressed(profile.id)),
                         ],
                         scrollable(column(profile.items.keys().map(|id| {
