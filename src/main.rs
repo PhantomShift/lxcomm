@@ -9,7 +9,6 @@
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap},
-    fs,
     hash::Hash,
     ops::Not,
     path::PathBuf,
@@ -39,10 +38,7 @@ use iced_aw::{card, widget::LabeledFrame};
 use ringmap::RingMap;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
-use steam_rs::{
-    self, Steam,
-    published_file_service::{get_details::FileDetailResult, query_files::PublishedFiles},
-};
+use steam_rs::{self, Steam, published_file_service::query_files::PublishedFiles};
 use strum::{Display, EnumIter, IntoEnumIterator};
 
 #[cfg(target_os = "windows")]
@@ -69,8 +65,6 @@ pub mod xcom_mod;
 
 const XCOM_APPID: u32 = 268500;
 const X2_WOTCCOMMUNITY_HIGHLANDER_ID: u32 = 1134256495;
-// Cache valid for 1 day
-const DEFAULT_CACHE_TIME: u32 = 86400;
 
 static APP_STRATEGY_ARGS: LazyLock<AppStrategyArgs> = LazyLock::new(|| AppStrategyArgs {
     author: "phantomshift".to_string(),
@@ -113,132 +107,6 @@ static PROFILES_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
 
 static ACTIVE_CONFIG_DIR: LazyLock<PathBuf> = LazyLock::new(|| DATA_DIR.join("active_config"));
 static ACTIVE_MODS_DIR: LazyLock<PathBuf> = LazyLock::new(|| DATA_DIR.join("active_mods"));
-
-// TODO - Introduce option for size limit of on-disk cache
-static QUERY_CACHE: LazyLock<moka::future::Cache<String, PublishedFiles>> =
-    LazyLock::new(|| moka::future::Cache::new(64));
-const QUERY_PAGE_SIZE: u32 = 30;
-async fn query_mods<S: Into<String>>(
-    client: Steam,
-    page: u32,
-    query: S,
-    cache_lifetime: u32,
-) -> Result<(PublishedFiles, bool)> {
-    let query: String = query.into();
-
-    let cache_key = format!("{page}|{query}");
-
-    if let Some(file) = QUERY_CACHE.get(&cache_key).await {
-        return Ok((file, true));
-    }
-
-    let clean = query.replace(' ', "_").to_ascii_lowercase();
-
-    // TODO - Different expose ranking options
-    // let cached = CACHED_QUERIES.join(format!("{clean}_update_page_{page}.json"));
-    let cached = CACHED_QUERIES.join(format!("{clean}_relevance_page_{page}.json"));
-    if let Ok(meta) = fs::metadata(&cached)
-        && let Ok(created) = meta.created()
-    {
-        if std::time::SystemTime::now()
-            .duration_since(created)
-            .expect("creation time should always be lower than now")
-            .as_secs()
-            <= cache_lifetime as u64
-        {
-            if let Ok(cached_file) = fs::File::open(&cached)
-                && let Ok(cached_files) = serde_json::from_reader::<_, PublishedFiles>(cached_file)
-            {
-                QUERY_CACHE.insert(cache_key, cached_files.clone()).await;
-                return Ok((cached_files, true));
-            }
-        } else {
-            fs::remove_file(&cached)?;
-        }
-    }
-
-    let query = client
-        .query_files(
-            // steam_rs::published_file_service::query_files::PublishedFileQueryType::RankedByLastUpdatedDate,
-            steam_rs::published_file_service::query_files::PublishedFileQueryType::RankedByTrend,
-            page,
-            "",
-            Some(QUERY_PAGE_SIZE),
-            XCOM_APPID,
-            XCOM_APPID,
-            "",
-            "",
-            None,
-            "",
-            "",
-            &query,
-            steam_rs::published_file_service::query_files::PublishedFileInfoMatchingFileType::Items,
-            0,
-            0,
-            false,
-            Some(DEFAULT_CACHE_TIME),
-            None,
-            "",
-            false,
-            false,
-            true,
-            true,
-            true,
-            true,
-            true,
-            false,
-            false,
-            Some(true),
-            1,
-        )
-        .await?;
-
-    if let Ok(cached) = fs::File::create(cached) {
-        serde_json::to_writer(cached, &query)?;
-    }
-
-    QUERY_CACHE.insert(cache_key, query.clone()).await;
-
-    Ok((query, false))
-}
-
-/// note - no cache check is done as mods are assumed to be
-/// unknown if this is called, otherwise it is cached somewhere on the filesystem.
-pub async fn get_mod_details<U: Copy + Into<u64>>(
-    client: Steam,
-    ids: &[U],
-) -> Result<Vec<steam_rs::published_file_service::query_files::File>> {
-    let ids = ids.iter().map(|u| (*u).into()).collect();
-    let details = client
-        .get_details(
-            ids,
-            true,
-            true,
-            true,
-            true,
-            true,
-            false,
-            false,
-            true,
-            None,
-            1,
-            XCOM_APPID,
-            false,
-            None,
-            Some(true),
-            false,
-        )
-        .await?;
-
-    Ok(details
-        .published_file_details
-        .into_iter()
-        .filter_map(|result| match result {
-            FileDetailResult::Valid(file) => Some(file),
-            FileDetailResult::Invalid(_) => None,
-        })
-        .collect())
-}
 
 #[derive(Debug, Default, Clone)]
 pub enum SettingsMessage {
@@ -820,7 +688,7 @@ impl App {
 
             Message::QueryFilesLoaded(files) => {
                 self.loaded_files = files.published_file_details;
-                self.browsing_page_max = files.total as u32 / QUERY_PAGE_SIZE + 1;
+                self.browsing_page_max = files.total as u32 / web::QUERY_PAGE_SIZE + 1;
 
                 let mut tasks = Vec::new();
                 for details in self.loaded_files.iter() {
@@ -952,7 +820,7 @@ impl App {
                 let api_key = self.api_key.clone();
                 return Task::done(Message::SetBusy(true))
                     .chain(Task::future(async move {
-                        match query_mods(
+                        match web::query_mods(
                             Steam::new(api_key.expose_secret()),
                             page,
                             query,
