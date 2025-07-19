@@ -2441,10 +2441,15 @@ impl App {
                     .on_submit_maybe(can_log_in.then_some(Message::SteamCMDLogin(true))),
                 button("Log In").on_press_maybe(can_log_in.then_some(Message::SteamCMDLogin(true))),
             ],
-            text_editor(&self.log)
-                .placeholder("Log currently empty...")
-                .on_action(Message::LogAction)
-                .height(Fill)
+            container(
+                text_editor(&self.log)
+                    .placeholder("Log currently empty...")
+                    .on_action(Message::LogAction)
+                    .font(iced::Font::MONOSPACE)
+                    .highlight("log", iced::highlighter::Theme::Leet)
+                    .height(Fill)
+            )
+            .style(container::dark)
         ]
         .into()
     }
