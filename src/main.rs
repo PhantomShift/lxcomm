@@ -2190,9 +2190,10 @@ impl App {
         grid = grid.push(iced_aw::grid_row!(
             checkbox("", all_selected).on_toggle(Message::LibraryToggleAll),
             text(""),
-            text("ID"),
+            text("Workshop ID"),
             text("Title"),
-            text("Path")
+            text("ID"),
+            text("Path"),
         ));
 
         for item in self.library.iter_filtered() {
@@ -2206,6 +2207,12 @@ impl App {
                     Message::None
                 }),
                 text(&item.title),
+                text(
+                    self.metadata
+                        .get(&id)
+                        .map(|data| data.id.as_str())
+                        .unwrap_or("UNKNOWN")
+                ),
                 text(item.path.display().to_string()),
             ));
         }
@@ -2239,14 +2246,14 @@ impl App {
                     .on_input(Message::LibraryFilterUpdateQuery),
             ],
             container(
-                scrollable(grid)
+                scrollable(container(grid).padding(16))
                     .direction(scrollable::Direction::Both {
                         vertical: Default::default(),
                         horizontal: Default::default()
                     })
-                    .height(Fill),
-            )
-            .padding(16),
+                    .width(Fill)
+                    .height(Fill)
+            ),
         ]
         .width(Fill)
         .height(Fill)
