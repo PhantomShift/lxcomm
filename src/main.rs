@@ -2312,13 +2312,20 @@ impl App {
                     button(text("View").align_x(Center))
                         .width(Fill)
                         .on_press(Message::SetViewingItem(*id)),
-                    button(text("Download").align_x(Center))
-                        .width(Fill)
-                        .on_press_maybe(
-                            self.is_downloading(*id)
-                                .not()
-                                .then_some(Message::SteamCMDDownloadRequested(*id))
-                        ),
+                    button(
+                        text(if self.item_downloaded(*id) {
+                            "Update"
+                        } else {
+                            "Download"
+                        })
+                        .align_x(Center)
+                    )
+                    .width(Fill)
+                    .on_press_maybe(
+                        self.is_downloading(*id)
+                            .not()
+                            .then_some(Message::SteamCMDDownloadRequested(*id))
+                    ),
                     text({
                         file.get_description()
                             .char_indices()
