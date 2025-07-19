@@ -4,10 +4,14 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use iced::futures::{
-    SinkExt, Stream, StreamExt,
-    channel::mpsc::{Receiver, Sender},
+use iced::{
+    Task,
+    futures::{
+        SinkExt, Stream, StreamExt,
+        channel::mpsc::{Receiver, Sender},
+    },
 };
+use itertools::{EitherOrBoth, Itertools};
 use notify::{RecommendedWatcher, Watcher};
 use steam_rs::published_file_service::query_files;
 
@@ -291,4 +295,72 @@ impl iced::advanced::subscription::Recipe for WatcherRecipe {
     ) -> iced::advanced::graphics::futures::BoxStream<Self::Output> {
         Box::pin(setup_watching(self.0))
     }
+}
+
+/// Panics if `names` is an absolute path or is empty. Assumes case insensitivity.
+pub fn find_directories_matching<P: Into<PathBuf>>(
+    names: P,
+) -> (Task<Option<PathBuf>>, iced::task::Handle) {
+    let names = names.into();
+    if names.has_root() || names.file_name().is_none() {
+        panic!("names must have a length of at least 1");
+    }
+
+    Task::stream(iced::stream::channel(128, async move |mut sender| {
+        let (async_send, mut async_rec) = tokio::sync::mpsc::channel(8);
+
+        let walker = walkdir::WalkDir::new("/").min_depth(2);
+        tokio::task::spawn_blocking(move || {
+            for entry in walker
+                .into_iter()
+                .filter_entry(|p| {
+                    !p.file_name()
+                        .to_str()
+                        .map(|s| s.starts_with("."))
+                        .unwrap_or(false)
+                })
+                .filter_map(|entry| entry.ok())
+            {
+                let mut iter = entry.path().components();
+                let components = iter.by_ref();
+                components.find(|comp| {
+                    comp.as_os_str().eq_ignore_ascii_case(
+                        names
+                            .components()
+                            .next()
+                            .expect("path should have at least one component"),
+                    )
+                });
+                let matches = components
+                    .zip_longest(names.components().skip(1))
+                    .all(|pair| {
+                        if let EitherOrBoth::Both(comp, name) = pair {
+                            comp.as_os_str().eq_ignore_ascii_case(name)
+                        } else {
+                            false
+                        }
+                    });
+
+                if matches
+                    && let Err(err) = async_send.blocking_send(Some(entry.path().to_path_buf()))
+                {
+                    eprintln!("Error sending message from directory walking thread: {err:?}");
+                    break;
+                }
+            }
+
+            if let Err(err) = async_send.blocking_send(None) {
+                eprintln!("Error sending message from directory walking thread: {err:?}");
+            }
+        });
+
+        while let Some(message) = async_rec.recv().await {
+            if let Err(err) = sender.send(message).await {
+                eprintln!(
+                    "Error sending message from task communicating for walking thread: {err:?}"
+                );
+            }
+        }
+    }))
+    .abortable()
 }

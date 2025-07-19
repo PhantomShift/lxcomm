@@ -7,15 +7,18 @@ repository = "https://github.com/phantomshift/lxcomm"
 description = "Mod browser and downloader made specifically for usage with the GOG version of XCOM2(WOTC) on Linux."
 
 [dependencies]
+apply = "0.3.0"
 bevy_reflect = "0.16.1"
 blake3 = "1.8.2"
 bstr = "1.12.0"
+derivative = "2.2.0"
 dircpy = "0.3.19"
 etcetera = "0.10.0"
 eyre = "0.6.12"
 fuse-rust = "0.4.0"
 humantime = "2.2.0"
 indoc = "2.0.6"
+itertools = "0.14.0"
 keyring = { git = "https://github.com/open-source-cooperative/keyring-rs", version = "4.0.0-rc.2" }
 keyvalues-serde = "0.2.2"
 moka = { version = "0.12.10", features = ["future", "sync"] }
@@ -34,6 +37,7 @@ strum = { version = "0.27.1", features = ["derive", "strum_macros"] }
 thiserror = "2.0.12"
 tokio = "1.46.0"
 tokio-util = { version = "0.7.15", features = ["rt"] }
+walkdir = "2.5.0"
 which = "8.0.0"
 
 [target.'cfg(windows)'.dependencies]

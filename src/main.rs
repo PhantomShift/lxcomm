@@ -17,8 +17,10 @@ use std::{
     time::Duration,
 };
 
+use apply::Apply;
 use bevy_reflect::{GetField, Reflect, StructInfo, Type, TypeInfo, Typed};
 use bstr::{BString, ByteSlice};
+use derivative::Derivative;
 use etcetera::{AppStrategy, AppStrategyArgs};
 use eyre::Result;
 use iced::{
@@ -27,7 +29,10 @@ use iced::{
     Length::{self, Fill, Shrink},
     Subscription, Task, Theme,
     alignment::Vertical,
-    futures::{SinkExt, channel::mpsc::Sender},
+    futures::{
+        SinkExt, StreamExt,
+        channel::mpsc::{Receiver, Sender},
+    },
     stream,
     widget::{
         self, Stack, button, checkbox, column, combo_box, container, horizontal_space, image,
@@ -131,6 +136,9 @@ pub enum Message {
 
     QueryFilesLoaded(PublishedFiles),
 
+    AsyncDialogResolve(AsyncDialogKey, usize),
+    AbortTask(AppAbortKey),
+
     ApiKeyRequest,
     ApiKeyRequestUpdate(String),
     ApiKeySubmit,
@@ -207,6 +215,10 @@ pub enum Message {
     LoadEditArgValue(usize, String),
     LoadLaunchGame,
 
+    LoadFindGameRequested,
+    LoadFindGameMatched(PathBuf),
+    LoadFindGameResolved(PathBuf),
+
     ItemDetailsAddToLibraryRequest(u32),
 
     SetPage(AppPage),
@@ -265,7 +277,8 @@ pub enum AppPage {
     Downloads,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Derivative)]
+#[derivative(PartialEq)]
 enum AppModal {
     ApiKeyRequest,
     AddToProfileRequest,
@@ -276,6 +289,34 @@ enum AppModal {
     Busy,
     BusyMessage(String),
     ErrorMessage(String, String),
+    AsyncDialog {
+        title: String,
+        body: String,
+        #[derivative(PartialEq = "ignore")]
+        sender: Sender<usize>,
+        options: Vec<String>,
+        key: AsyncDialogKey,
+        strategy: AsyncDialogStrategy,
+    },
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum AsyncDialogStrategy {
+    /// Clear any dialogs in the stack with the same ID
+    Replace,
+    /// Push it onto the stack,
+    /// but do not display if it is not the lowest one
+    /// with the given ID
+    Queue,
+    /// Display dialog regardless of the existence
+    /// of others with the same ID
+    #[default]
+    Stack,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AsyncDialogKey {
+    GameFind,
 }
 
 impl AppModal {
@@ -291,8 +332,37 @@ impl AppModal {
             Busy => false,
             BusyMessage(_) => false,
             ErrorMessage(_, _) => true,
+            AsyncDialog { .. } => false,
         }
     }
+
+    fn async_dialog<T: Into<String>, B: Into<String>>(
+        key: AsyncDialogKey,
+        title: T,
+        body: B,
+        options: Vec<String>,
+        strategy: AsyncDialogStrategy,
+    ) -> (Self, Receiver<usize>) {
+        let (sender, receiver) = iced::futures::channel::mpsc::channel(1);
+        (
+            Self::AsyncDialog {
+                key,
+                title: title.into(),
+                body: body.into(),
+                sender,
+                options,
+                strategy,
+            },
+            receiver,
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AppAbortKey {
+    GameFind,
+
+    Id(usize),
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -344,6 +414,7 @@ pub struct App {
     background_resolver_sender: Option<Sender<Message>>,
     mod_editor: mod_edit::Editor,
     active_profile_combo: combo_box::State<String>,
+    abortable_handles: HashMap<AppAbortKey, iced::task::Handle>,
 }
 
 #[derive(Debug, Reflect, Clone, Copy)]
@@ -606,6 +677,7 @@ impl App {
             background_resolver_sender: None,
             mod_editor: mod_edit::Editor::default(),
             active_profile_combo,
+            abortable_handles: HashMap::new(),
         };
 
         let auto_grab_api_key = match app.credentials.steam_web_api.get_password() {
@@ -640,6 +712,29 @@ impl App {
             Message::ModEditor(message) => {
                 if let Some(task) = self.mod_editor.update(message) {
                     return task;
+                }
+            }
+            Message::AsyncDialogResolve(key, choice) => {
+                if let Some(index) =
+                    self.modal_stack
+                        .iter()
+                        .enumerate()
+                        .find_map(|(index, modal)| {
+                            matches!(modal, AppModal::AsyncDialog { key: this_key, .. } if *this_key == key).then_some(index)
+                        })
+                    && let AppModal::AsyncDialog { mut sender, .. } = self.modal_stack.remove(index)
+                {
+                    return Task::future(async move {
+                        if let Err(err) = sender.send(choice).await {
+                            eprintln!("Error resolving async dialog: {err:?}")
+                        }
+                        Message::None
+                    });
+                }
+            }
+            Message::AbortTask(key) => {
+                if let Some(handle) = self.abortable_handles.remove(&key) {
+                    handle.abort()
                 }
             }
 
@@ -1543,6 +1638,53 @@ impl App {
                 };
             }
 
+            Message::LoadFindGameRequested => {
+                let (task, abort) =
+                    files::find_directories_matching("XCOM 2/XCom2-WarOfTheChosen/Binaries");
+
+                if let Some(handle) = self.abortable_handles.insert(AppAbortKey::GameFind, abort) {
+                    handle.abort();
+                }
+
+                return Task::done(Message::SetBusy(true)).chain(task.map(|p| match p {
+                    Some(path) => Message::LoadFindGameMatched(path),
+                    None => Message::Chained(vec![
+                        Message::AbortTask(AppAbortKey::GameFind),
+                        Message::SetBusy(false),
+                    ]),
+                }));
+            }
+            Message::LoadFindGameMatched(mut path) => {
+                path.pop();
+                let (modal, mut rec) = AppModal::async_dialog(
+                    AsyncDialogKey::GameFind,
+                    "Found Game Path",
+                    format!(
+                        "Program found the following path: is it correct?\n{}",
+                        path.display()
+                    ),
+                    vec!["No".to_string(), "Yes".to_string()],
+                    AsyncDialogStrategy::Queue,
+                );
+
+                self.modal_stack.push(modal);
+
+                return Task::future(async move {
+                    if Some(1) == rec.next().await {
+                        Message::LoadFindGameResolved(path)
+                    } else {
+                        Message::None
+                    }
+                });
+            }
+            Message::LoadFindGameResolved(path) => {
+                self.save.game_directory = Some(path);
+                if let Some(handle) = self.abortable_handles.remove(&AppAbortKey::GameFind) {
+                    handle.abort();
+                }
+                return Task::done(Message::SetBusy(false));
+            }
+
             Message::ItemDetailsAddToLibraryRequest(item_id) => {
                 self.library
                     .as_mut()
@@ -1927,6 +2069,34 @@ impl App {
         .into()
     }
 
+    fn async_dialog_modal<'a>(&'a self, dialog: &'a AppModal) -> Element<'a, Message> {
+        let AppModal::AsyncDialog {
+            key,
+            title,
+            body,
+            sender: _,
+            options,
+            strategy: _,
+        } = dialog
+        else {
+            panic!("async_dialog_modal should only be passed an async dialog")
+        };
+
+        iced_aw::card(
+            text(title),
+            column![
+                text(body),
+                row(options.iter().enumerate().map(|(i, display)| {
+                    button(text(display))
+                        .on_press(Message::AsyncDialogResolve(*key, i))
+                        .into()
+                }))
+            ],
+        )
+        .width(300)
+        .into()
+    }
+
     fn settings_page(&self) -> Element<'_, Message> {
         let settings = &self.settings_editing;
         let col = column(APP_SETTINGS_INFO.iter().map(|field| {
@@ -2057,29 +2227,46 @@ impl App {
                     AppPage::Downloads => self.downloads_page(),
                 }
             ],
-            self.modal_stack.iter().map(|modal| match modal {
-                AppModal::ApiKeyRequest => self.steam_api_key_modal(),
-                AppModal::SteamGuardCodeRequest => self.steam_guard_code_request_mdodal(),
-                AppModal::ErrorMessage(title, message) => self.error_message_modal(title, message),
-                AppModal::LibraryDeleteRequest => self.library_delete_request_modal(),
-                AppModal::ProfileAddRequest => self.profile_add_modal(),
-                AppModal::AddToProfileRequest => self.add_to_profile_modal(),
-                AppModal::ItemDetailedView(id) => self.view_item_detailed(*id),
-                AppModal::Busy => container(iced_aw::spinner::Spinner::new().height(32).width(32))
-                    .center(Fill)
-                    .into(),
-                AppModal::BusyMessage(msg) => container(
-                    column![
-                        text(msg),
-                        iced_aw::spinner::Spinner::new().height(32).width(32)
-                    ]
-                    .spacing(8)
-                    .align_x(Center),
-                )
-                .style(container::rounded_box)
-                .padding(16)
-                .into(),
-            }),
+            {
+                self.modal_stack.iter().filter_map(|modal| {
+                    match modal {
+                        AppModal::ApiKeyRequest => self.steam_api_key_modal(),
+                        AppModal::SteamGuardCodeRequest => self.steam_guard_code_request_mdodal(),
+                        AppModal::ErrorMessage(title, message) => {
+                            self.error_message_modal(title, message)
+                        }
+                        AppModal::LibraryDeleteRequest => self.library_delete_request_modal(),
+                        AppModal::ProfileAddRequest => self.profile_add_modal(),
+                        AppModal::AddToProfileRequest => self.add_to_profile_modal(),
+                        AppModal::ItemDetailedView(id) => self.view_item_detailed(*id),
+                        dialog @ AppModal::AsyncDialog {
+                            strategy: AsyncDialogStrategy::Stack | AsyncDialogStrategy::Replace,
+                            ..
+                        } => self.async_dialog_modal(dialog),
+                        dialog @ AppModal::AsyncDialog {
+                            strategy: AsyncDialogStrategy::Queue,
+                            key: current_key,
+                            ..
+                        } => {
+                            if self
+                                .modal_stack
+                                .iter()
+                                .take_while(|other| other != &modal)
+                                .any(|other| {
+                                    matches!(other, AppModal::AsyncDialog { key, .. } if key == current_key)
+                                })
+                            {
+                                return None;
+                            }
+
+                            self.async_dialog_modal(dialog)
+                        }
+
+                        AppModal::Busy => self.busy_modal(),
+                        AppModal::BusyMessage(msg) => self.busy_message_modal(msg),
+                    }.apply(Some)
+                })
+            },
         )
         .into()
     }
@@ -2104,6 +2291,11 @@ impl App {
                     "Game Directory",
                     row![
                         button(symbols::folder()).on_press(Message::LoadPickGameDirectory),
+                        // TODO - add tooltip convenience function, as all tooltips in the program are generally syled the same
+                        tooltip(
+                            button(symbols::magnifying_glass()).on_press(Message::LoadFindGameRequested),
+                            container("Automatically find game directory").style(container::rounded_box).padding(16), tooltip::Position::FollowCursor
+                        ),
                         text_input(
                             "/path/to/XCom2-WarOfTheChosen",
                             &self
@@ -2458,6 +2650,26 @@ impl App {
             )
             .style(container::dark)
         ]
+        .into()
+    }
+
+    fn busy_modal(&self) -> Element<'_, Message> {
+        container(iced_aw::spinner::Spinner::new().height(32).width(32))
+            .center(Fill)
+            .into()
+    }
+
+    fn busy_message_modal<'a>(&'a self, msg: &'a str) -> Element<'a, Message> {
+        container(
+            column![
+                text(msg),
+                iced_aw::spinner::Spinner::new().height(32).width(32)
+            ]
+            .spacing(8)
+            .align_x(Center),
+        )
+        .style(container::rounded_box)
+        .padding(16)
         .into()
     }
 
