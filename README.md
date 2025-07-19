@@ -22,6 +22,7 @@ In no particular order:
 - [ ] Per-profile character pools (user setup, point at Documents/My Games/XCOM2 War of the Chosen/XComGame/CharacterPool)
 - [ ] Read most recent game logs (user setup, point at Documents/My Games/XCOM2 War of the Chosen/XComGame/Logs/Launch.log)
 - [ ] Support manually downloaded mods
+- [ ] Support workshop collections
 
 ## License
 
