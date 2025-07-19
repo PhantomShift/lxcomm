@@ -79,7 +79,7 @@ static APP_SESSION_PATH: &str = "/io/github/phantomshift/lxcomm";
 
 fn get_strategy() -> impl AppStrategy {
     etcetera::app_strategy::choose_native_strategy(APP_STRATEGY_ARGS.clone())
-        .expect("native strategy should succeed")
+        .expect("home directory should be findable in system")
 }
 static DATA_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
     let dir = get_strategy().data_dir();
