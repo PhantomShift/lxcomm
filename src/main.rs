@@ -2,6 +2,7 @@
 #![feature(iter_intersperse)]
 #![feature(exit_status_error)]
 #![feature(path_add_extension)]
+#![feature(iter_map_windows)]
 // For windows soft links
 #![cfg_attr(target_os = "windows", feature(junction_point))]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -30,8 +31,8 @@ use iced::{
     stream,
     widget::{
         self, Stack, button, checkbox, column, combo_box, container, horizontal_space, image,
-        markdown, opaque, progress_bar, rich_text, row, scrollable, span, stack, text, text_editor,
-        text_input, toggler, tooltip, vertical_rule, vertical_space,
+        markdown, opaque, pick_list, progress_bar, rich_text, row, scrollable, span, stack, text,
+        text_editor, text_input, toggler, tooltip, vertical_rule, vertical_space,
     },
 };
 use iced_aw::{card, widget::LabeledFrame};
@@ -39,7 +40,7 @@ use ringmap::RingMap;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use steam_rs::{self, Steam, published_file_service::query_files::PublishedFiles};
-use strum::{Display, EnumIter, IntoEnumIterator};
+use strum::{Display, EnumIter, IntoEnumIterator, VariantArray};
 
 #[cfg(target_os = "windows")]
 use crate::extensions::DetailsExtension;
@@ -137,9 +138,13 @@ pub enum Message {
     SetApiKey(String),
     SetBrowsePage(u32),
     SetViewingItem(u32),
-    EditBrowseQuery(String),
-    SubmitBrowseQuery,
-    UpdateQuery,
+    BrowseEditQuery(String),
+    BrowseEditTag(web::XCOM2WorkshopTag),
+    BrowseEditSort(web::WorkshopSort),
+    BrowseEditPeriod(web::WorkshopTrendPeriod),
+    BrowseToggleTagsDropdown(bool),
+    BrowseSubmitQuery,
+    BrowseUpdateQuery,
 
     SetSteamCMDUser(String),
     SetSteamCMDPassword(String),
@@ -310,8 +315,10 @@ pub struct App {
     modal_stack: Vec<AppModal>,
     browsing_page: u32,
     browsing_page_max: u32,
-    browsing_query: String,
+    browsing_query: web::WorkshopQuery,
+    browsing_query_period: web::WorkshopTrendPeriod,
     browse_query_edit: String,
+    browse_query_tags_open: bool,
     loaded_files: Vec<steam_rs::published_file_service::query_files::File>,
     steamcmd_state: Arc<steamcmd::State>,
     steamcmd_code: SecretString,
@@ -568,8 +575,10 @@ impl App {
             modal_stack: Vec::new(),
             browsing_page: 0,
             browsing_page_max: 0,
-            browsing_query: String::new(),
+            browsing_query: web::WorkshopQuery::default(),
+            browsing_query_period: web::WorkshopTrendPeriod::default(),
             browse_query_edit: String::new(),
+            browse_query_tags_open: false,
             loaded_files: vec![],
             steamcmd_state,
             steamcmd_code: SecretString::default(),
@@ -745,7 +754,7 @@ impl App {
                 }
 
                 self.browsing_page = new;
-                return Task::done(Message::UpdateQuery);
+                return Task::done(Message::BrowseUpdateQuery);
             }
             Message::SetViewingItem(id) => {
                 self.modal_stack.push(AppModal::ItemDetailedView(id));
@@ -802,18 +811,29 @@ impl App {
                     });
                 }
             }
-            Message::EditBrowseQuery(query) => self.browse_query_edit = query,
-            Message::SubmitBrowseQuery => {
-                if self.browsing_page > 0 && self.browsing_query == self.browse_query_edit {
-                    return Task::none();
+            Message::BrowseEditQuery(query) => self.browse_query_edit = query,
+            Message::BrowseEditSort(sort) => self.browsing_query.sort = sort,
+            Message::BrowseEditTag(tag) => {
+                if self.browsing_query.tags.contains(&tag) {
+                    self.browsing_query.tags.remove(&tag);
+                } else {
+                    self.browsing_query.tags.insert(tag);
                 }
-
-                self.browsing_query = self.browse_query_edit.clone();
+            }
+            Message::BrowseEditPeriod(period) => {
+                self.browsing_query_period = period;
+                if let web::WorkshopSort::Trend(_) = self.browsing_query.sort {
+                    self.browsing_query.sort = web::WorkshopSort::Trend(period);
+                }
+            }
+            Message::BrowseToggleTagsDropdown(toggled) => self.browse_query_tags_open = toggled,
+            Message::BrowseSubmitQuery => {
+                self.browsing_query.query = self.browse_query_edit.clone();
                 self.browsing_page = 1;
 
-                return Task::done(Message::UpdateQuery);
+                return Task::done(Message::BrowseUpdateQuery);
             }
-            Message::UpdateQuery => {
+            Message::BrowseUpdateQuery => {
                 let page = self.browsing_page;
                 let query = self.browsing_query.clone();
                 let cache_lifetime = self.settings.steam_webapi_cache_lifetime;
@@ -2331,9 +2351,44 @@ impl App {
             row![
                 text("Search"),
                 text_input("Query...", &self.browse_query_edit)
-                    .on_input(Message::EditBrowseQuery)
-                    .on_submit(Message::SubmitBrowseQuery)
+                    .on_input(Message::BrowseEditQuery)
+                    .on_submit(Message::BrowseSubmitQuery)
             ],
+            row![pick_list(
+                web::WorkshopSort::all_with_period(self.browsing_query_period),
+                Some(self.browsing_query.sort),
+                Message::BrowseEditSort
+            )]
+            .push_maybe(match self.browsing_query.sort {
+                web::WorkshopSort::Trend(period) => {
+                    Some(pick_list(
+                        web::WorkshopTrendPeriod::VARIANTS,
+                        Some(period),
+                        Message::BrowseEditPeriod,
+                    ))
+                }
+                _ => None,
+            })
+            .push(
+                iced_aw::DropDown::new(
+                    button("Tags").width(256).style(button::secondary).on_press(
+                        Message::BrowseToggleTagsDropdown(!self.browse_query_tags_open)
+                    ),
+                    container(column(web::XCOM2WorkshopTag::VARIANTS.iter().map(|tag| {
+                        row![
+                            text(tag.to_string()),
+                            horizontal_space(),
+                            toggler(self.browsing_query.tags.contains(tag))
+                                .on_toggle(|_| Message::BrowseEditTag(*tag))
+                        ]
+                        .into()
+                    })),)
+                    .style(container::dark)
+                    .padding(8),
+                    self.browse_query_tags_open,
+                )
+                .on_dismiss(Message::BrowseToggleTagsDropdown(false))
+            ),
             scrollable(column!(items))
                 .height(iced::Length::Fill)
                 .anchor_top(),

@@ -1,10 +1,15 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
+    fmt::Display,
+    hash::{Hash, Hasher},
     path::PathBuf,
     sync::{Arc, LazyLock},
 };
 
-use crate::{CACHE_DIR, Message, XCOM_APPID};
+use crate::{
+    CACHE_DIR, Message, XCOM_APPID,
+    extensions::{SplitAtBoundary, URLArrayListable},
+};
 use eyre::Result;
 use iced::{
     Length::Fill,
@@ -13,8 +18,12 @@ use iced::{
 };
 use steam_rs::{
     Steam,
-    published_file_service::{get_details::FileDetailResult, query_files::PublishedFiles},
+    published_file_service::{
+        get_details::FileDetailResult,
+        query_files::{PublishedFileQueryType, PublishedFiles},
+    },
 };
+use strum::VariantArray;
 
 // Cache valid for 1 day
 const DEFAULT_CACHE_TIME: u32 = 86400;
@@ -147,29 +156,176 @@ pub fn setup_background_resolver() -> impl Stream<Item = Message> {
     })
 }
 
+/// XCOM2 Workshop item tags. This is assumed to be a static list.
+#[derive(
+    Debug, Clone, Copy, strum::Display, Hash, PartialEq, Eq, PartialOrd, Ord, VariantArray,
+)]
+pub enum XCOM2WorkshopTag {
+    #[strum(to_string = "War of the Chosen")]
+    WarOfTheChosen,
+    #[strum(to_string = "Soldier Class")]
+    SoldierClass,
+    #[strum(to_string = "Soldier Customization")]
+    SoldierCustomization,
+    Facility,
+    Voice,
+    UI,
+    Item,
+    Weapon,
+    Map,
+    Alien,
+    Gameplay,
+}
+
+#[derive(Debug, Clone, Copy, Default, Hash, PartialEq, Eq, PartialOrd, Ord, VariantArray)]
+pub enum WorkshopTrendPeriod {
+    Today,
+    #[default]
+    Week,
+    ThreeMonths,
+    SixMonths,
+    OneYear,
+    // TODO - Figure out how to use all time through Steam web API, if possible.
+    // URL parameter simply accepts `-1` in the workshop site itself,
+    // but this doesn't seem to work with the web API.
+    // Numbers > 365 seem to be truncated down to 365.
+    // AllTime,
+}
+
+impl Display for WorkshopTrendPeriod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = format!("{self:?}");
+        let display = name.split_at_case().collect::<Vec<_>>().join(" ");
+        f.write_str(&display)
+    }
+}
+
+impl WorkshopTrendPeriod {
+    fn as_days(&self) -> u32 {
+        match self {
+            WorkshopTrendPeriod::Today => 1,
+            WorkshopTrendPeriod::Week => 7,
+            WorkshopTrendPeriod::ThreeMonths => 30,
+            WorkshopTrendPeriod::SixMonths => 180,
+            WorkshopTrendPeriod::OneYear => 365,
+            // WorkshopTrendPeriod::AllTime => -1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub enum WorkshopSort {
+    Trend(WorkshopTrendPeriod),
+    MostRecent,
+    LastUpdated,
+    TotalUniqueSubscribers,
+    TextSearch,
+}
+
+impl Default for WorkshopSort {
+    fn default() -> Self {
+        Self::Trend(WorkshopTrendPeriod::default())
+    }
+}
+
+impl Display for WorkshopSort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Trend(_) => "Most Popular",
+            Self::MostRecent => "Most Recent",
+            Self::LastUpdated => "Last Updated",
+            Self::TotalUniqueSubscribers => "Most Subscribed",
+            Self::TextSearch => "Relevance",
+        };
+
+        f.write_str(s)
+    }
+}
+
+impl WorkshopSort {
+    fn as_query_type(&self) -> PublishedFileQueryType {
+        match self {
+            Self::Trend(_) => PublishedFileQueryType::RankedByTrend,
+            Self::MostRecent => PublishedFileQueryType::RankedByPublicationDate,
+            Self::LastUpdated => PublishedFileQueryType::RankedByLastUpdatedDate,
+            Self::TotalUniqueSubscribers => {
+                PublishedFileQueryType::RankedByTotalUniqueSubscriptions
+            }
+            Self::TextSearch => PublishedFileQueryType::RankedByTextSearch,
+        }
+    }
+
+    pub fn all_with_period(period: WorkshopTrendPeriod) -> Vec<Self> {
+        vec![
+            Self::Trend(period),
+            Self::MostRecent,
+            Self::LastUpdated,
+            Self::TotalUniqueSubscribers,
+            Self::TextSearch,
+        ]
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct WorkshopQuery {
+    pub query: String,
+    pub sort: WorkshopSort,
+    pub tags: BTreeSet<XCOM2WorkshopTag>,
+}
+
+impl std::hash::Hash for WorkshopQuery {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.query.to_lowercase().hash(state);
+        self.sort.hash(state);
+        self.tags.hash(state);
+    }
+}
+
+impl WorkshopQuery {
+    fn new<S: Into<String>>(query: S) -> Self {
+        Self {
+            query: query
+                .into()
+                .replace(|ch: char| ch.is_ascii_whitespace(), "+"),
+            ..Default::default()
+        }
+    }
+
+    fn with_sort(self, sort: WorkshopSort) -> Self {
+        Self { sort, ..self }
+    }
+
+    fn with_tags(self, tags: impl IntoIterator<Item = XCOM2WorkshopTag>) -> Self {
+        Self {
+            tags: BTreeSet::from_iter(tags),
+            ..self
+        }
+    }
+
+    fn as_hashed(&self) -> u64 {
+        let mut hasher = std::hash::DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
 // TODO - Introduce option for size limit of on-disk cache
 static QUERY_CACHE: LazyLock<moka::future::Cache<String, PublishedFiles>> =
     LazyLock::new(|| moka::future::Cache::new(64));
 pub const QUERY_PAGE_SIZE: u32 = 30;
-pub async fn query_mods<S: Into<String>>(
+pub async fn query_mods(
     client: Steam,
     page: u32,
-    query: S,
+    query: WorkshopQuery,
     cache_lifetime: u32,
 ) -> Result<(PublishedFiles, bool)> {
-    let query: String = query.into();
-
-    let cache_key = format!("{page}|{query}");
+    let cache_key = format!("{}_page_{page:05}", query.as_hashed());
 
     if let Some(file) = QUERY_CACHE.get(&cache_key).await {
         return Ok((file, true));
     }
 
-    let clean = query.replace(' ', "_").to_ascii_lowercase();
-
-    // TODO - Different expose ranking options
-    // let cached = CACHED_QUERIES.join(format!("{clean}_update_page_{page}.json"));
-    let cached = crate::CACHED_QUERIES.join(format!("{clean}_relevance_page_{page}.json"));
+    let cached = crate::CACHED_QUERIES.join(format!("{cache_key}.json"));
     if let Ok(meta) = tokio::fs::metadata(&cached).await
         && let Ok(created) = meta.created()
     {
@@ -192,22 +348,24 @@ pub async fn query_mods<S: Into<String>>(
 
     let query = client
         .query_files(
-            // steam_rs::published_file_service::query_files::PublishedFileQueryType::RankedByLastUpdatedDate,
-            steam_rs::published_file_service::query_files::PublishedFileQueryType::RankedByTrend,
+            query.sort.as_query_type(),
             page,
             "",
             Some(QUERY_PAGE_SIZE),
             XCOM_APPID,
             XCOM_APPID,
+            &format!("&{}", query.tags.clone().into_url_array("requiredtags")),
+            "",
+            Some(!query.tags.is_empty()),
             "",
             "",
-            None,
-            "",
-            "",
-            &query,
+            &query.query,
             steam_rs::published_file_service::query_files::PublishedFileInfoMatchingFileType::Items,
             0,
-            0,
+            match &query.sort {
+                WorkshopSort::Trend(period) => period.as_days(),
+                _ => 0,
+            },
             false,
             Some(DEFAULT_CACHE_TIME),
             None,
