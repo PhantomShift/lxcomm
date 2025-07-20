@@ -3117,7 +3117,7 @@ impl App {
                 text_input("Profile Name", self.profile_add_name.as_str())
                     .on_input(Message::ProfileAddEdited)
                     .on_submit(Message::ProfileAddCompleted(true)),
-            ],]
+            ]]
             .spacing(4),
         )
         .foot(row![
@@ -3147,7 +3147,8 @@ impl App {
             )
             .on_toggle(Message::LibraryAddToProfileToggleAll),
             text("Name")
-        ]];
+        ]]
+        .column_widths(&[Shrink, Shrink]);
 
         iced_aw::card(
             "Add to Profile",
@@ -3168,6 +3169,7 @@ impl App {
                 .style(button::success)
                 .on_press(Message::LibraryAddToProfileConfirm(true)),
         ])
+        .width(300)
         .into()
     }
 
