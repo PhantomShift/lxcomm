@@ -232,45 +232,64 @@ pub fn link_mod_environment<D: AsRef<Path>>(
     Ok(())
 }
 
-pub fn link_profile_saves<S: AsRef<Path>>(
+pub fn link_profile_local_files<L: AsRef<Path>>(
     profile: &Profile,
-    save_path: S,
+    local_path: L,
 ) -> Result<(), std::io::Error> {
-    if save_path.as_ref().try_exists()?
-        && save_path.as_ref().is_dir()
-        && !save_path.as_ref().with_extension("bak").exists()
-    {
-        eprintln!(
-            "moving {} to {}...",
-            save_path.as_ref().display(),
-            save_path.as_ref().with_extension("bak").display()
-        );
-        dircpy::copy_dir(save_path.as_ref(), save_path.as_ref().with_extension("bak"))?;
+    // Validate that this is actually inside the documents folder
+    let mut search = local_path.as_ref().components();
+    let mut validate_has = |name: &'static str| {
+        search
+            .find(|comp| comp.as_os_str().eq_ignore_ascii_case(name))
+            .ok_or(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "did not find '{name}' in given local path, it is unlikely the game points here"
+                ),
+            ))
+    };
+    validate_has("Documents")?;
+    validate_has("My Games")?;
+
+    if !local_path.as_ref().exists() {
+        eprintln!("Local directory doesn't appear to exist, creating it from scratch...");
+        std::fs::create_dir_all(local_path.as_ref())?;
     }
 
-    std::fs::remove_dir_all(save_path.as_ref())?;
+    let save_path = local_path.as_ref().join("SaveData");
+
+    if save_path.try_exists()? && save_path.is_dir() && !save_path.with_extension("bak").exists() {
+        eprintln!(
+            "moving {} to {}...",
+            save_path.display(),
+            save_path.with_extension("bak").display()
+        );
+        dircpy::copy_dir(&save_path, save_path.with_extension("bak"))?;
+    }
+
+    std::fs::remove_dir_all(&save_path)?;
 
     let profile_save = PROFILES_DIR.join(profile.id.to_string()).join("SaveData");
     if !profile_save.try_exists()? {
         std::fs::create_dir(&profile_save)?;
     }
 
-    files::link_dirs(profile_save, save_path.as_ref())?;
+    files::link_dirs(profile_save, save_path)?;
 
     Ok(())
 }
 
 // All necessary steps to load a profile into the game directory
-pub fn bootstrap_load_profile<DL: AsRef<Path>, DS: AsRef<Path>, S: AsRef<Path>>(
+pub fn bootstrap_load_profile<DL: AsRef<Path>, DS: AsRef<Path>, L: AsRef<Path>>(
     profile: &Profile,
     download_dir: DL,
     metadata: &BTreeMap<u32, xcom_mod::ModMetadata>,
     destination: DS,
-    save_path: S,
+    local_path: L,
 ) -> Result<(), std::io::Error> {
     build_active_config(download_dir.as_ref(), profile)?;
     build_mod_environment(download_dir.as_ref(), metadata, profile)?;
     link_mod_environment(profile, metadata, destination.as_ref())?;
-    link_profile_saves(profile, save_path.as_ref())?;
+    link_profile_local_files(profile, local_path.as_ref())?;
     Ok(())
 }

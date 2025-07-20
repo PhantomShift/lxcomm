@@ -204,8 +204,8 @@ pub enum Message {
     LoadPrepareProfile(bool),
     LoadPickGameDirectory,
     LoadSetGameDirectory(PathBuf),
-    LoadPickSaveDirectory,
-    LoadSetSaveDirectory(PathBuf),
+    LoadPickLocalDirectory,
+    LoadSetLocalDirectory(PathBuf),
     LoadPickLaunchCommand,
     LoadSetLaunchCommand(String),
     // TODO - Split args into explicit pairs
@@ -218,6 +218,9 @@ pub enum Message {
     LoadFindGameRequested,
     LoadFindGameMatched(PathBuf),
     LoadFindGameResolved(PathBuf),
+    LoadFindLocalRequested,
+    LoadFindLocalMatched(PathBuf),
+    LoadFindLocalResolved(PathBuf),
 
     ItemDetailsAddToLibraryRequest(u32),
 
@@ -317,6 +320,7 @@ enum AsyncDialogStrategy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AsyncDialogKey {
     GameFind,
+    LocalFind,
 }
 
 impl AppModal {
@@ -361,6 +365,7 @@ impl AppModal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AppAbortKey {
     GameFind,
+    LocalFind,
 
     Id(usize),
 }
@@ -371,7 +376,7 @@ struct AppSave {
     profiles: BTreeMap<usize, library::Profile>,
     active_profile: Option<usize>,
     game_directory: Option<PathBuf>,
-    save_directory: Option<PathBuf>,
+    local_directory: Option<PathBuf>,
     launch_command: Option<String>,
     launch_args: Vec<(String, String)>,
 }
@@ -1495,10 +1500,10 @@ impl App {
                     ));
                 };
 
-                let Some(save_path) = &self.save.save_directory else {
+                let Some(local_path) = &self.save.local_directory else {
                     return Task::done(Message::display_error(
-                        "No Save Directory",
-                        "Save directory must be set.",
+                        "No Local Directory",
+                        "Local directory must be set.",
                     ));
                 };
 
@@ -1526,7 +1531,7 @@ impl App {
                         &self.settings.download_directory,
                         &self.metadata,
                         destination,
-                        save_path,
+                        local_path,
                     ) {
                         return Task::done(Message::display_error(
                             "Error Applying Config",
@@ -1553,18 +1558,18 @@ impl App {
                 return task.chain(Task::done(Message::SetBusy(false)));
             }
             Message::LoadSetGameDirectory(path) => self.save.game_directory = Some(path),
-            Message::LoadPickSaveDirectory => {
+            Message::LoadPickLocalDirectory => {
                 let task = Task::done(Message::SetBusy(true));
                 let task = task.chain(Task::future(async {
                     if let Some(handle) = rfd::AsyncFileDialog::new().pick_folder().await {
-                        Message::LoadSetSaveDirectory(handle.path().to_path_buf())
+                        Message::LoadSetLocalDirectory(handle.path().to_path_buf())
                     } else {
                         Message::None
                     }
                 }));
                 return task.chain(Task::done(Message::SetBusy(false)));
             }
-            Message::LoadSetSaveDirectory(path) => self.save.save_directory = Some(path),
+            Message::LoadSetLocalDirectory(path) => self.save.local_directory = Some(path),
             Message::LoadPickLaunchCommand => {
                 let task = Task::done(Message::SetBusy(true));
                 let task = task.chain(Task::future(async {
@@ -1660,7 +1665,7 @@ impl App {
                     AsyncDialogKey::GameFind,
                     "Found Game Path",
                     format!(
-                        "Program found the following path: is it correct?\n{}",
+                        "Program found the following path:\n\n{}\n\nIs this the correct one?",
                         path.display()
                     ),
                     vec!["No".to_string(), "Yes".to_string()],
@@ -1680,6 +1685,53 @@ impl App {
             Message::LoadFindGameResolved(path) => {
                 self.save.game_directory = Some(path);
                 if let Some(handle) = self.abortable_handles.remove(&AppAbortKey::GameFind) {
+                    handle.abort();
+                }
+                return Task::done(Message::SetBusy(false));
+            }
+            // Possible TODO - convert this into a macro
+            Message::LoadFindLocalRequested => {
+                let (task, abort) = files::find_directories_matching(
+                    "Documents/My Games/XCOM2 War of the Chosen/XComGame",
+                );
+
+                if let Some(handle) = self.abortable_handles.insert(AppAbortKey::LocalFind, abort) {
+                    handle.abort();
+                }
+
+                return Task::done(Message::SetBusy(true)).chain(task.map(|p| match p {
+                    Some(path) => Message::LoadFindLocalMatched(path),
+                    None => Message::Chained(vec![
+                        Message::AbortTask(AppAbortKey::LocalFind),
+                        Message::SetBusy(false),
+                    ]),
+                }));
+            }
+            Message::LoadFindLocalMatched(path) => {
+                let (modal, mut rec) = AppModal::async_dialog(
+                    AsyncDialogKey::GameFind,
+                    "Found Local Path",
+                    format!(
+                        "Program found the following path:\n\n{}\n\nIs this the correct one?",
+                        path.display()
+                    ),
+                    vec!["No".to_string(), "Yes".to_string()],
+                    AsyncDialogStrategy::Queue,
+                );
+
+                self.modal_stack.push(modal);
+
+                return Task::future(async move {
+                    if Some(1) == rec.next().await {
+                        Message::LoadFindLocalResolved(path)
+                    } else {
+                        Message::None
+                    }
+                });
+            }
+            Message::LoadFindLocalResolved(path) => {
+                self.save.local_directory = Some(path);
+                if let Some(handle) = self.abortable_handles.remove(&AppAbortKey::LocalFind) {
                     handle.abort();
                 }
                 return Task::done(Message::SetBusy(false));
@@ -2093,7 +2145,7 @@ impl App {
                 }))
             ],
         )
-        .width(300)
+        .width(Shrink)
         .into()
     }
 
@@ -2294,7 +2346,8 @@ impl App {
                         // TODO - add tooltip convenience function, as all tooltips in the program are generally syled the same
                         tooltip(
                             button(symbols::magnifying_glass()).on_press(Message::LoadFindGameRequested),
-                            container("Automatically find game directory").style(container::rounded_box).padding(16), tooltip::Position::FollowCursor
+                            container("Automatically find game directory").style(container::rounded_box).padding(16),
+                            tooltip::Position::FollowCursor,
                         ),
                         text_input(
                             "/path/to/XCom2-WarOfTheChosen",
@@ -2308,27 +2361,31 @@ impl App {
                         .on_input(|s| Message::LoadSetGameDirectory(PathBuf::from(s))),
                     ],
                 ),
-                LabeledFrame::new(
-                    "Save Directory",
-                    tooltip(
-                        row![
-                            button(symbols::folder()).on_press(Message::LoadPickSaveDirectory),
+                LabeledFrame::new("Local Directory",
+                    row![
+                        button(symbols::folder()).on_press(Message::LoadPickLocalDirectory),
+                        tooltip(
+                            button(symbols::magnifying_glass()).on_press(Message::LoadFindLocalRequested),
+                            container("Automatically find. Note this is likely to fail if you haven't launched the game at least once before.")
+                                .style(container::rounded_box).padding(16),
+                            tooltip::Position::FollowCursor,
+                        ),
+                        tooltip(
                             text_input(
-                                "/path/to/Documents/My Games/XCOM2 War of the Chosen/XComGame/SaveData",
+                                "/path/to/Documents/My Games/XCOM2 War of the Chosen/XComGame",
                                 &self
                                     .save
-                                    .save_directory
+                                    .local_directory
                                     .as_ref()
                                     .map(|p| p.display().to_string())
                                     .unwrap_or_default()
-                            )
-                            .on_input(|s| Message::LoadSetSaveDirectory(PathBuf::from(s))),
-                        ],
-                        container("This is the path where the game expects to read save data from.\nIf a save exists, it will automatically be moved to 'SaveData.bak'")
-                            .style(container::rounded_box)
-                            .padding(16),
-                        tooltip::Position::FollowCursor,
-                    ),
+                            ).on_input(|s| Message::LoadSetLocalDirectory(PathBuf::from(s))),
+                            container("This is the path where the game expects find your local data (e.g. saves). Files/folders that are modified will have backups automatically created.")
+                                .style(container::rounded_box)
+                                .padding(16),
+                            tooltip::Position::FollowCursor,
+                        ),
+                    ],
                 ),
                 LabeledFrame::new(
                     "Launch Command",
