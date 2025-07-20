@@ -48,8 +48,10 @@ LXCOMM will prompt you for this key every time you open the program unless you e
 
 Along with the web API key, LXCOMM uses SteamCMD for downloading workshop items, and as such,
 requires that you login with your username, password and a Steam Guard code if you have two-factor enabled.
-SteamCMD attempts to use a cached login when it starts up every time,
-but if it fails, requires that you login again.
+Ensure that you have [SteamCMD installed](https://developer.valvesoftware.com/wiki/SteamCMD#Downloading_SteamCMD).
+If it cannot be found in the path, try setting it manually in the settings.
+LXCOMM attempts to use a cached login when it starts up every time,
+but if it fails, requires that you log in again.
 
 To reiterate this point, if you are not comfortable with an entity other than Valve handling your Steam login credentials (as is very much reasonable), turn back now and get AML set up.
 
