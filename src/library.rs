@@ -1,7 +1,10 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::LazyLock};
 
+use apply::Apply;
 use fuse_rust::Fuse;
 use serde::{Deserialize, Serialize};
+
+use crate::{files::Cache, xcom_mod};
 
 static DEFAULT_FUZZY_MATCHER: LazyLock<Fuse> = LazyLock::new(|| Fuse {
     // Potential TODO - Adjust this threshold
@@ -58,14 +61,16 @@ impl Default for LibraryItemSettings {
 
 #[derive(Default)]
 pub struct Library {
-    inner: BTreeMap<u32, LibraryItem>,
+    pub items: BTreeMap<u32, LibraryItem>,
+    pub compatibility: BTreeMap<u32, xcom_mod::ModCompatibility>,
     pub filter_fuzzy: bool,
     pub filter_query: String,
+    pub missing_dependencies: BTreeMap<u32, Vec<String>>,
 }
 
 impl Library {
     pub fn iter_selected(&self) -> impl Iterator<Item = &LibraryItem> {
-        self.inner.values().filter(|item| item.selected)
+        self.items.values().filter(|item| item.selected)
     }
 
     #[inline]
@@ -83,7 +88,7 @@ impl Library {
         &self,
         filter_method: FilterMethod,
     ) -> impl Iterator<Item = &LibraryItem> {
-        self.inner
+        self.items
             .values()
             .filter(move |item| filter_method.matches(item))
     }
@@ -96,7 +101,7 @@ impl Library {
         &mut self,
         filter_method: FilterMethod,
     ) -> impl Iterator<Item = &mut LibraryItem> {
-        self.inner
+        self.items
             .values_mut()
             .filter(move |item| filter_method.matches(item))
     }
@@ -107,21 +112,57 @@ impl Library {
 
     pub fn update_selected_filtered(&mut self) {
         let method = self.get_filter_method();
-        for item in self.inner.values_mut() {
+        for item in self.items.values_mut() {
             item.selected = item.selected && method.matches(item);
         }
     }
-}
 
-impl AsRef<BTreeMap<u32, LibraryItem>> for Library {
-    fn as_ref(&self) -> &BTreeMap<u32, LibraryItem> {
-        &self.inner
-    }
-}
+    pub fn update_missing_dependencies(
+        &mut self,
+        cache: Cache,
+        metadata: &BTreeMap<u32, xcom_mod::ModMetadata>,
+    ) {
+        let mut all_missing = BTreeMap::new();
+        let provided = xcom_mod::get_provided_mods(self.items.keys().copied(), metadata, self);
+        for id in self.items.keys() {
+            let mut missing = vec![];
+            if let Some(compat) = self.compatibility.get(id) {
+                missing.extend(
+                    compat
+                        .required
+                        .iter()
+                        .filter(|required| !provided.contains(*required))
+                        .cloned(),
+                )
+            }
+            if let Some(info) = cache.get_details(*id) {
+                missing.extend(info.children.iter().filter_map(|child| {
+                    if let Ok(child_id) = child.published_file_id.parse::<u32>()
+                        && !metadata
+                            .iter()
+                            .any(|(id, data)| *id == child_id && provided.contains(&data.dlc_name))
+                    {
+                        Some(format!(
+                            "{} ({child_id})",
+                            cache
+                                .get_details(child_id)
+                                .as_deref()
+                                .map(|details| details.title.as_str())
+                                .unwrap_or("UNKNOWN")
+                        ))
+                    } else {
+                        None
+                    }
+                }));
+            }
 
-impl AsMut<BTreeMap<u32, LibraryItem>> for Library {
-    fn as_mut(&mut self) -> &mut BTreeMap<u32, LibraryItem> {
-        &mut self.inner
+            if !missing.is_empty() {
+                missing.sort();
+                all_missing.insert(*id, missing);
+            }
+        }
+
+        self.missing_dependencies = all_missing;
     }
 }
 
@@ -131,6 +172,8 @@ pub struct Profile {
     pub name: String,
     pub items: BTreeMap<u32, LibraryItemSettings>,
 
+    #[serde(skip)]
+    pub compatibility_issues: BTreeMap<u32, Vec<CompatibilityIssue>>,
     #[serde(skip)]
     pub add_selected: bool,
     #[serde(skip)]
@@ -153,11 +196,92 @@ impl Profile {
     pub fn missing_items(&self, library: &Library) -> Vec<u32> {
         let mut missing = Vec::new();
         for (item, _) in self.items.iter() {
-            if !library.as_ref().contains_key(item) {
+            if !library.items.contains_key(item) {
                 missing.push(*item);
             }
         }
 
         missing
     }
+
+    pub fn update_compatibility_issues(
+        &mut self,
+        cache: Cache,
+        metadata: &BTreeMap<u32, xcom_mod::ModMetadata>,
+        library: &Library,
+    ) {
+        let mut all = BTreeMap::new();
+        let provided = xcom_mod::get_provided_mods(self.items.keys().copied(), metadata, library);
+
+        for id in self.items.keys() {
+            if let Some(compat) = library.compatibility.get(id) {
+                let mut issues = vec![];
+                issues.extend(
+                    compat
+                        .required
+                        .iter()
+                        .filter(|required| !provided.contains(*required))
+                        .cloned()
+                        .map(CompatibilityIssue::MissingRequired),
+                );
+
+                issues.extend(
+                    compat
+                        .incompatible
+                        .iter()
+                        .filter(|incompatible| provided.contains(*incompatible))
+                        .cloned()
+                        .map(CompatibilityIssue::Incompatible),
+                );
+
+                if let Some(details) = cache.get_details(*id) {
+                    issues.extend(details.children.iter().filter_map(|child| {
+                        if let Ok(child_id) = child.published_file_id.parse::<u32>()
+                            && !self.items.contains_key(&child_id)
+                            && !metadata.iter().any(|(&id, data)| {
+                                id == child_id && provided.contains(&data.dlc_name)
+                            })
+                        {
+                            CompatibilityIssue::MissingWorkshop(
+                                child_id,
+                                format!(
+                                    "{} ({})",
+                                    child.published_file_id,
+                                    cache
+                                        .get_details(child_id)
+                                        .as_deref()
+                                        .map(|details| details.title.as_str())
+                                        .unwrap_or("UNKNOWN")
+                                ),
+                            )
+                            .apply(Some)
+                        } else {
+                            None
+                        }
+                    }));
+                }
+
+                if !issues.is_empty() {
+                    issues.sort();
+                    all.insert(*id, issues);
+                }
+            } else {
+                all.insert(*id, vec![CompatibilityIssue::Unknown]);
+            }
+        }
+
+        self.compatibility_issues = all;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CompatibilityIssue {
+    /// Missing an item listed as a requirement by the Workshop page
+    MissingWorkshop(u32, String),
+    /// Missing an item listed as a requirement by their XComGame.ini
+    MissingRequired(String),
+    /// Conflicts with a mod listed by their XComGame.ini
+    Incompatible(String),
+    /// The mod is missing its data
+    Unknown,
 }

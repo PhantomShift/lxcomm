@@ -1116,7 +1116,7 @@ impl App {
                 }
                 self.completed_downloads.remove(&id);
                 self.downloaded.remove(&id);
-                self.library.as_mut().remove(&id);
+                self.library.items.remove(&id);
             }
             Message::DownloadCancelRequested(id) => {
                 if let Some(_progress) = self.ongoing_downloads.remove(&id) {
@@ -1212,7 +1212,7 @@ impl App {
                 }
             }
             Message::SteamCMDCheckUpdateRequested => {
-                let ids = self.library.as_ref().keys().copied().collect::<Vec<_>>();
+                let ids = self.library.items.keys().copied().collect::<Vec<_>>();
                 let cache = self.file_cache.clone();
                 let state = self.steamcmd_state.clone();
 
@@ -1236,7 +1236,7 @@ impl App {
             }
             Message::LibraryToggleItem(id, toggle) => {
                 self.library
-                    .as_mut()
+                    .items
                     .entry(id)
                     .and_modify(|item| item.selected = toggle);
             }
@@ -1364,7 +1364,13 @@ impl App {
                         items
                             .into_iter()
                             .map(|id| (id, library::LibraryItemSettings::default())),
-                    )
+                    );
+
+                    profile.update_compatibility_issues(
+                        self.file_cache.clone(),
+                        &self.metadata,
+                        &self.library,
+                    );
                 });
             }
             Message::ProfileDeletePressed(id) => {
@@ -1374,10 +1380,14 @@ impl App {
                 }
             }
             Message::ProfileRemoveItems(id, items) => {
-                self.save
-                    .profiles
-                    .entry(id)
-                    .and_modify(|profile| profile.items.retain(|id, _| !items.contains(id)));
+                self.save.profiles.entry(id).and_modify(|profile| {
+                    profile.items.retain(|id, _| !items.contains(id));
+                    profile.update_compatibility_issues(
+                        self.file_cache.clone(),
+                        &self.metadata,
+                        &self.library,
+                    );
+                });
 
                 if let Some(selected) = self.selected_profile_id
                     && id == selected
@@ -1739,7 +1749,7 @@ impl App {
 
             Message::ItemDetailsAddToLibraryRequest(item_id) => {
                 self.library
-                    .as_mut()
+                    .items
                     .iter_mut()
                     .for_each(|(id, item)| item.selected = *id == item_id);
                 self.modal_stack.push(AppModal::AddToProfileRequest);
@@ -1952,11 +1962,35 @@ impl App {
                                 .on_press(Message::ProfileDeletePressed(profile.id)),
                         ],
                         scrollable(column(profile.items.keys().map(|id| {
+                            let mut issues = vec![];
+                            if !self.item_downloaded(*id) {
+                                issues.push("Missing: Mod is not downloaded (or found)".to_string());
+                            }
+
+                            issues.extend(
+                                profile.compatibility_issues.get(id).map(Vec::as_slice).unwrap_or_default().iter().map(|item| {
+                                    match item {
+                                        library::CompatibilityIssue::MissingWorkshop(_id, message) => {
+                                            format!("Missing Workshop Dependency: {message}")
+                                        }
+                                        library::CompatibilityIssue::MissingRequired(dlc_name) => {
+                                            format!("Missing Dependency: {dlc_name}")
+                                        },
+                                        library::CompatibilityIssue::Incompatible(dlc_name) => {
+                                            format!("Incompatible Mod: {dlc_name}")
+                                        },
+                                        library::CompatibilityIssue::Unknown => {
+                                            "Missing Info".to_string()
+                                        },
+                                    }
+                                }
+                            ));
+
                             let button_style = if let Some(sel_id) = profile.view_selected_item
                                 && sel_id == *id
                             {
                                 button::secondary
-                            } else if !self.item_downloaded(*id) {
+                            } else if !issues.is_empty() {
                                 button::danger
                             } else {
                                 button::primary
@@ -1966,15 +2000,24 @@ impl App {
                             } else {
                                 " (MISSING)"
                             };
-                            if let Some(details) = self.file_cache.get_details(*id) {
+                            let button = if let Some(details) = self.file_cache.get_details(*id) {
                                 button(text!("{} ({id}){missing_text}", details.title))
                                     .on_press(Message::ProfileItemSelected(*id))
                             } else {
                                 button(text!("UNKNOWN ({id}){missing_text}"))
                             }
                             .style(button_style)
-                            .width(Fill)
-                            .into()
+                            .width(Fill);
+
+                            if !issues.is_empty() {
+                                tooltip(
+                                    button,
+                                    container(column(issues.into_iter().map(|s| text(s).into()))).style(container::rounded_box).padding(16),
+                                    tooltip::Position::Bottom,
+                                ).into()
+                            } else {
+                                button.into()
+                            }
                         })))
                         .height(128),
                     ]
@@ -2031,6 +2074,43 @@ impl App {
                 .then_some(Message::SteamCMDDownloadRequested(id)),
         );
 
+        let missing_ids = file
+            .children
+            .iter()
+            .filter_map(|c| {
+                if let Ok(id) = c.published_file_id.parse::<u32>()
+                    && !self.item_downloaded(id)
+                {
+                    Some(id)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let download_missing = missing_ids
+            .iter()
+            .any(|&id| !self.item_downloaded(id))
+            .then(|| {
+                let on_press = missing_ids
+                    .iter()
+                    .all(|&id| !self.is_downloading(id))
+                    .then_some(Message::Chained(
+                        missing_ids
+                            .into_iter()
+                            .map(Message::SteamCMDDownloadRequested)
+                            .collect(),
+                    ));
+
+                tooltip(
+                    button("Download Missing").on_press_maybe(on_press),
+                    container("This only downloads direct dependencies")
+                        .style(container::bordered_box)
+                        .padding(16),
+                    tooltip::Position::Bottom,
+                )
+            });
+
         container(
             container(column![
                 row![
@@ -2076,6 +2156,7 @@ impl App {
                         button("Add to Profile")
                             .on_press(Message::ItemDetailsAddToLibraryRequest(id)),
                     ])
+                    .push_maybe(download_missing)
                     .push_maybe(
                         self.item_downloaded(id).then_some(
                             button("Delete")
@@ -2447,22 +2528,43 @@ impl App {
 
         for item in self.library.iter_filtered() {
             let id = item.id;
+            let missing = self.library.missing_dependencies.get(&id);
+            let text_style = if missing.is_some() {
+                text::danger
+            } else {
+                text::default
+            };
             grid = grid.push(iced_aw::grid_row!(
                 checkbox("", item.selected)
                     .on_toggle(move |toggle| Message::LibraryToggleItem(id, toggle)),
                 button(symbols::eye()).on_press(Message::SetViewingItem(id)),
-                rich_text([span(id).link(id.to_string())]).on_link_click(|link: String| {
-                    println!("link {link} was clicked");
-                    Message::None
-                }),
-                text(&item.title),
+                tooltip(
+                    rich_text([span(id).link(id.to_string()).underline(missing.is_some())])
+                        .on_link_click(|link: String| {
+                            println!("link {link} was clicked");
+                            Message::None
+                        })
+                        .style(text_style),
+                    if let Some(missing) = missing {
+                        container(column(
+                            missing.iter().map(|s| text!("Missing Item: {s}").into()),
+                        ))
+                        .padding(16)
+                        .style(container::bordered_box)
+                    } else {
+                        container("")
+                    },
+                    tooltip::Position::Right,
+                ),
+                text(&item.title).style(text_style),
                 text(
                     self.metadata
                         .get(&id)
                         .map(|data| data.dlc_name.as_str())
                         .unwrap_or("UNKNOWN")
-                ),
-                text(item.path.display().to_string()),
+                )
+                .style(text_style),
+                text(item.path.display().to_string()).style(text_style),
             ));
         }
 
@@ -3142,6 +3244,12 @@ impl App {
                                             data.published_file_id = file_name.to_string_lossy().parse::<u32>()
                                                 .expect("steam workshop items should be contained in a folder named by its ID");
                                         }
+                                        let compat = self
+                                            .library
+                                            .compatibility
+                                            .entry(data.published_file_id)
+                                            .or_default();
+                                        compat.extend_with(xcom_mod::scan_compatibility(&entry));
                                         self.downloaded.insert(data.published_file_id, entry);
                                         self.metadata.insert(data.published_file_id, data);
                                     }
@@ -3169,10 +3277,10 @@ impl App {
         }
 
         for (id, path) in self.downloaded.iter() {
-            if let Some(item) = self.library.as_mut().get_mut(id) {
+            if let Some(item) = self.library.items.get_mut(id) {
                 item.path = path.clone();
             } else if let Some(details) = self.file_cache.get_details(*id) {
-                self.library.as_mut().insert(
+                self.library.items.insert(
                     *id,
                     library::LibraryItem {
                         id: *id,
@@ -3185,6 +3293,16 @@ impl App {
             } else {
                 eprintln!("Missing details for item {id}");
             }
+        }
+
+        self.library
+            .update_missing_dependencies(self.file_cache.clone(), &self.metadata);
+        for profile in self.save.profiles.values_mut() {
+            profile.update_compatibility_issues(
+                self.file_cache.clone(),
+                &self.metadata,
+                &self.library,
+            );
         }
     }
 
