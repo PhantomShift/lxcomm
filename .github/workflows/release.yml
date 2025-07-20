@@ -36,6 +36,12 @@ jobs:
         with:
           targets: ${{ matrix.platform.target }}
 
+      - name: Install Dependencies
+        run: |
+             if [[ "${{matrix.platform.os}}" != "windows-latest" ]]; then
+               sudo apt install libdbus-1-dev pkg-config
+             fi
+
       - name: Build Binary
         run: cargo build --locked --release --target ${{ matrix.platform.target }}
 
