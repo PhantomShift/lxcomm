@@ -37,6 +37,7 @@ jobs:
           targets: ${{ matrix.platform.target }}
 
       - name: Install Dependencies
+        shell: bash
         run: |
              if [[ "${{matrix.platform.os}}" != "windows-latest" ]]; then
                sudo apt install libdbus-1-dev pkg-config
