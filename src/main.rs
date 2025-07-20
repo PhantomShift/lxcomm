@@ -1367,7 +1367,13 @@ impl App {
                             .map(|p| &p.name)
                             .cloned()
                             .collect(),
-                    )
+                    );
+                    let remnants = PROFILES_DIR.join(id.to_string());
+                    if let Ok(true) = remnants.try_exists()
+                        && let Err(err) = std::fs::remove_dir_all(remnants)
+                    {
+                        eprintln!("Error deleting left-over profile folder: {err:?}");
+                    }
                 }
                 self.modal_stack.pop();
             }
