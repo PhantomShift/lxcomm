@@ -18,7 +18,7 @@ pub struct ModMetadata {
     pub description: String,
     pub requires_xpack: bool,
     /// The actual name of the mod being used
-    pub id: String,
+    pub dlc_name: String,
 }
 
 impl ModMetadata {
@@ -61,7 +61,7 @@ impl ModMetadata {
             title,
             description,
             requires_xpack,
-            id: name.into(),
+            dlc_name: name.into(),
         })
     }
 }

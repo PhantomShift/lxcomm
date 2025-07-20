@@ -2459,7 +2459,7 @@ impl App {
                 text(
                     self.metadata
                         .get(&id)
-                        .map(|data| data.id.as_str())
+                        .map(|data| data.dlc_name.as_str())
                         .unwrap_or("UNKNOWN")
                 ),
                 text(item.path.display().to_string()),

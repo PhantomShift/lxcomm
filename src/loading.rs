@@ -97,7 +97,7 @@ pub fn build_mod_environment<D: AsRef<Path>>(
         let id_string = id.to_string();
         let files = files::get_item_directory(download_dir.as_ref(), *id);
 
-        let dest = ACTIVE_MODS_DIR.join(&data.id);
+        let dest = ACTIVE_MODS_DIR.join(&data.dlc_name);
         std::fs::create_dir_all(&dest)?;
 
         for entry in std::fs::read_dir(files)? {
@@ -150,7 +150,7 @@ pub fn write_mod_list<W: std::io::Write>(
             ));
         };
 
-        writeln!(writer, r#"ActiveMods="{}""#, data.id)?;
+        writeln!(writer, r#"ActiveMods="{}""#, data.dlc_name)?;
     }
     Ok(())
 }
