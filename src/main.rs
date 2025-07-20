@@ -13,6 +13,7 @@ use std::{
     hash::Hash,
     ops::Not,
     path::PathBuf,
+    process::Stdio,
     sync::{Arc, LazyLock},
     time::Duration,
 };
@@ -242,6 +243,10 @@ pub enum Message {
     LogAction(iced::widget::text_editor::Action),
     FileWatchEvent(notify::Event),
     BackgroundResolverMessage(web::ResolverMessage),
+    LaunchLogAction(iced::widget::text_editor::Action),
+    LaunchLogCreated(String),
+    LaunchLogAppended(String),
+    LaunchLogClear,
 
     // Web-related
     ImageLoaded(String, image::Handle),
@@ -278,6 +283,8 @@ pub enum AppPage {
     SteamCMD,
     Settings,
     Downloads,
+    #[strum(to_string = "Game Logs")]
+    GameLogs,
 }
 
 #[derive(Debug, Derivative)]
@@ -366,6 +373,7 @@ impl AppModal {
 pub enum AppAbortKey {
     GameFind,
     LocalFind,
+    GameLogMonitor,
 
     Id(usize),
 }
@@ -400,7 +408,7 @@ pub struct App {
     settings: AppSettings,
     settings_editing: AppSettings,
     credentials: AppCredentials,
-    log: iced::widget::text_editor::Content,
+    steamcmd_log: iced::widget::text_editor::Content,
     save: AppSave,
     images: HashMap<String, image::Handle>,
     download_queue: RingMap<u32, u64>,
@@ -420,6 +428,7 @@ pub struct App {
     mod_editor: mod_edit::Editor,
     active_profile_combo: combo_box::State<String>,
     abortable_handles: HashMap<AppAbortKey, iced::task::Handle>,
+    launch_log: iced::widget::text_editor::Content,
 }
 
 #[derive(Debug, Reflect, Clone, Copy)]
@@ -665,7 +674,7 @@ impl App {
                 steam_web_api: steam_web_api_entry,
                 steam_password: steam_password_entry,
             },
-            log: Default::default(),
+            steamcmd_log: Default::default(),
             images: HashMap::new(),
             download_queue: RingMap::new(),
             ongoing_downloads,
@@ -683,6 +692,7 @@ impl App {
             mod_editor: mod_edit::Editor::default(),
             active_profile_combo,
             abortable_handles: HashMap::new(),
+            launch_log: Default::default(),
         };
 
         let auto_grab_api_key = match app.credentials.steam_web_api.get_password() {
@@ -705,10 +715,14 @@ impl App {
             }
         };
         let auto_login = Task::done(Message::SteamCMDLogin(false));
+        let monitor_launch_log = app.setup_launch_log_monitor();
 
         app.scan_downloads();
 
-        Ok((app, Task::batch([auto_grab_api_key, auto_login])))
+        Ok((
+            app,
+            Task::batch([auto_grab_api_key, auto_login, monitor_launch_log]),
+        ))
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -1624,6 +1638,7 @@ impl App {
                     let busy = Task::done(Message::SetBusy(true));
                     busy.chain(Task::future(async move {
                         let mut command = std::process::Command::new(command);
+                        command.stdout(Stdio::null());
 
                         for (l, r) in args {
                             if !l.is_empty() {
@@ -1823,22 +1838,47 @@ impl App {
                     .insert(sender);
             }
             Message::LogAppend(message) => {
-                self.log
+                self.steamcmd_log
                     .perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
-                self.log
+                self.steamcmd_log
                     .perform(text_editor::Action::Edit(text_editor::Edit::Paste(
                         Arc::new(strip_ansi_escapes::strip(message).as_bstr().to_string()),
                     )));
-                self.log
+                self.steamcmd_log
                     .perform(text_editor::Action::Edit(text_editor::Edit::Enter));
             }
             Message::LogAction(action) => match action {
                 text_editor::Action::Edit(_) => (),
-                action => self.log.perform(action),
+                action => self.steamcmd_log.perform(action),
             },
 
             Message::ImageLoaded(id, handle) => {
                 let _ = self.images.insert(id, handle);
+            }
+
+            Message::LaunchLogAction(action) => match action {
+                text_editor::Action::Edit(_) => (),
+                action => self.launch_log.perform(action),
+            },
+            Message::LaunchLogCreated(contents) => {
+                self.launch_log.perform(text_editor::Action::SelectAll);
+                self.launch_log
+                    .perform(text_editor::Action::Edit(text_editor::Edit::Paste(
+                        Arc::new(contents),
+                    )));
+                self.launch_log
+                    .perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
+            }
+            Message::LaunchLogAppended(contents) => {
+                self.launch_log
+                    .perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
+                self.launch_log
+                    .perform(text_editor::Action::Edit(text_editor::Edit::Paste(
+                        Arc::new(contents),
+                    )));
+            }
+            Message::LaunchLogClear => {
+                self.launch_log = text_editor::Content::new();
             }
 
             Message::None => (),
@@ -2358,6 +2398,7 @@ impl App {
                     AppPage::SteamCMD => self.steamcmd_page(),
                     AppPage::Settings => self.settings_page(),
                     AppPage::Downloads => self.downloads_page(),
+                    AppPage::GameLogs => self.game_logs_page(),
                 }
             ],
             {
@@ -2800,7 +2841,7 @@ impl App {
                 button("Log In").on_press_maybe(can_log_in.then_some(Message::SteamCMDLogin(true))),
             ],
             container(
-                text_editor(&self.log)
+                text_editor(&self.steamcmd_log)
                     .placeholder("Log currently empty...")
                     .on_action(Message::LogAction)
                     .font(iced::Font::MONOSPACE)
@@ -3010,6 +3051,23 @@ impl App {
         }
 
         scrollable(col).into()
+    }
+
+    fn game_logs_page(&self) -> Element<'_, Message> {
+        column![
+            button("Clear").on_press(Message::LaunchLogClear),
+            container(
+                text_editor(&self.launch_log)
+                    .placeholder("Log currently empty...")
+                    .on_action(Message::LaunchLogAction)
+                    .font(iced::Font::MONOSPACE)
+                    .highlight("log", iced::highlighter::Theme::Leet)
+                    .height(Fill),
+            )
+            .style(container::dark)
+            .width(Fill)
+        ]
+        .into()
     }
 
     fn queue_downloads(&mut self) -> Task<Message> {
@@ -3372,6 +3430,25 @@ impl App {
         }
 
         None
+    }
+
+    fn setup_launch_log_monitor(&mut self) -> Task<Message> {
+        if let Some(handle) = self.abortable_handles.remove(&AppAbortKey::GameLogMonitor) {
+            handle.abort();
+        }
+
+        if let Some(local) = &self.save.local_directory {
+            let path = local.join("Logs/Launch.log");
+            let (task, handle) = files::monitor_file_changes(path.clone());
+            self.abortable_handles
+                .insert(AppAbortKey::GameLogMonitor, handle);
+            task.map(|change| match change {
+                files::MonitorFileChange::Create(s) => Message::LaunchLogCreated(s),
+                files::MonitorFileChange::Append(s) => Message::LaunchLogAppended(s),
+            })
+        } else {
+            Task::none()
+        }
     }
 }
 

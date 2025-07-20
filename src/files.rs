@@ -1,9 +1,11 @@
 use std::{
     fmt::Display,
+    io::{Read, Seek},
     path::{Path, PathBuf},
     sync::{Arc, LazyLock},
 };
 
+use bstr::ByteSlice;
 use iced::{
     Task,
     futures::{
@@ -273,6 +275,86 @@ pub fn setup_watching(path: PathBuf) -> impl Stream<Item = Message> {
             eprintln!("Error occurred in file watching process: {err:?}");
         }
     })
+}
+
+#[derive(Debug, Clone)]
+pub enum MonitorFileChange {
+    Create(String),
+    Append(String),
+}
+
+pub fn monitor_file_changes(path: PathBuf) -> (Task<MonitorFileChange>, iced::task::Handle) {
+    Task::stream(iced::stream::channel(16, async move |mut output| {
+        let res: eyre::Result<()> = try {
+            let (mut watcher, mut receiver) = async_watcher()?;
+            watcher.watch(&path, notify::RecursiveMode::NonRecursive)?;
+
+            let mut position = 0;
+            while let Some(event) = receiver.next().await {
+                match event {
+                    Err(err) => {
+                        eprintln!("notify-rs event error: {err:?}");
+                    }
+                    Ok(event) => match event {
+                        notify::Event {
+                            kind: notify::EventKind::Create(_),
+                            ..
+                        } => {
+                            let (len, contents) = if let Ok(bytes) = tokio::fs::read(&path).await {
+                                (bytes.len(), bytes.to_str_lossy().to_string())
+                            } else {
+                                (0, String::new())
+                            };
+                            if output
+                                .send(MonitorFileChange::Create(contents))
+                                .await
+                                .is_ok()
+                            {
+                                position += len;
+                            }
+                        }
+                        notify::Event {
+                            kind:
+                                notify::EventKind::Modify(notify::event::ModifyKind::Data(
+                                    notify::event::DataChange::Content
+                                    | notify::event::DataChange::Size
+                                    | notify::event::DataChange::Any,
+                                )),
+                            ..
+                        } => {
+                            let path = path.clone();
+                            let (read, contents) =
+                                tokio::task::spawn_blocking(move || -> eyre::Result<_> {
+                                    let mut file = std::fs::File::open(path)?;
+                                    let mut buffer = Vec::new();
+                                    file.seek(std::io::SeekFrom::Start(position as u64))?;
+                                    let read = file.read_to_end(&mut buffer)?;
+                                    Ok((read, buffer.to_str_lossy().to_string()))
+                                })
+                                .await
+                                .ok()
+                                .and_then(Result::ok)
+                                .unwrap_or_default();
+                            let message = if position == 0 {
+                                MonitorFileChange::Create(contents)
+                            } else {
+                                MonitorFileChange::Append(contents)
+                            };
+                            if output.send(message).await.is_ok() {
+                                position += read;
+                            }
+                        }
+                        _ => (),
+                    },
+                }
+            }
+        };
+
+        if let Err(err) = res {
+            eprintln!("Error when operating file watcher: {err:?}");
+        }
+    }))
+    .abortable()
 }
 
 // Something with rust's type resolver at the time of writing

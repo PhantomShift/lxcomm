@@ -82,6 +82,8 @@ where
     }
 }
 
+// TODO - Use notify-rust to allow notifications on windows as well
+// https://github.com/hoodie/notify-rust
 #[cfg(target_os = "linux")]
 pub mod zbus_ext {
     use serde::Serialize;
