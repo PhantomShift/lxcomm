@@ -692,6 +692,7 @@ impl App {
         let auto_grab_api_key = match app.credentials.steam_web_api.get_password() {
             _ if !app.settings.steam_webapi_save_api_key => Task::done(Message::ApiKeyRequest),
 
+            Ok(key) if key.is_empty() => Task::done(Message::ApiKeyRequest),
             Ok(key) => {
                 app.api_key = SecretString::from(key);
                 Task::none()
