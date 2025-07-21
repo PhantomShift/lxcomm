@@ -2067,7 +2067,7 @@ impl App {
                         })))
                         .height(128),
                     ]
-                    .push_maybe(profile.view_selected_item.map(|item_id| {
+                    .push(profile.view_selected_item.map(|item_id| {
                         row![
                             button("View Details").on_press(Message::SetViewingItem(item_id)),
                             horizontal_space(),
@@ -2076,7 +2076,7 @@ impl App {
                                 .on_press(Message::ProfileRemoveItems(profile.id, vec![item_id]))
                         ]
                     }))
-                    .push_maybe(
+                    .push(
                         profile
                             .view_selected_item
                             .is_some()
@@ -2168,7 +2168,7 @@ impl App {
                         text(file.title.clone()).size(18),
                         text!("{:.2} out of 10", file.get_score() * 10.0),
                     ]
-                    .push_maybe(file.children.is_empty().not().then(|| {
+                    .push(file.children.is_empty().not().then(|| {
                         row!["Dependencies -"]
                             .extend(file.children.iter().map(|child| {
                                 let child_id = child
@@ -2202,8 +2202,8 @@ impl App {
                         button("Add to Profile")
                             .on_press(Message::ItemDetailsAddToLibraryRequest(id)),
                     ])
-                    .push_maybe(download_missing)
-                    .push_maybe(
+                    .push(download_missing)
+                    .push(
                         self.item_downloaded(id).then_some(
                             button("Delete")
                                 .style(button::danger)
@@ -2287,7 +2287,7 @@ impl App {
             let description = field.get_attribute::<AppSettingsDescription>();
             let label = tooltip(
                 row![text(display.0).align_y(Vertical::Center).height(Fill),]
-                    .push_maybe(description.is_some().then_some(text("?").size(12))),
+                    .push(description.is_some().then_some(text("?").size(12))),
                 match description {
                     Some(description) => container(text(description.0))
                         .style(container::rounded_box)
@@ -2771,7 +2771,7 @@ impl App {
                 Some(self.browsing_query.sort),
                 Message::BrowseEditSort
             )]
-            .push_maybe(match self.browsing_query.sort {
+            .push(match self.browsing_query.sort {
                 web::WorkshopSort::Trend(period) => {
                     Some(pick_list(
                         web::WorkshopTrendPeriod::VARIANTS,

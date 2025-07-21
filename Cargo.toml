@@ -34,6 +34,7 @@ similar = "2.7.0"
 steam-rs = "0.5.1"
 strip-ansi-escapes = "0.2.1"
 strum = { version = "0.27.1", features = ["derive", "strum_macros"] }
+two-face = { version = "*", default-features = false, features = ["syntect-default-fancy"] }
 thiserror = "2.0.12"
 tokio = "1.46.0"
 tokio-util = { version = "0.7.15", features = ["rt"] }
@@ -61,9 +62,9 @@ git = "https://github.com/phantomshift/iced_aw"
 branch = "redhawk-more-highlights"
 
 [patch.crates-io]
-iced = { git = "https://github.com/phantomshift/iced.git", version = "0.14.0-dev", rev = "2657e8e" }
-iced_core = { git = "https://github.com/phantomshift/iced.git", version = "0.14.0-dev", rev = "2657e8e" }
-iced_widget = { git = "https://github.com/phantomshift/iced.git", version = "0.14.0-dev", rev = "2657e8e" }
+iced = { git = "https://github.com/phantomshift/iced.git", version = "0.14.0-dev", rev = "7e8575e" }
+iced_core = { git = "https://github.com/phantomshift/iced.git", version = "0.14.0-dev", rev = "7e8575e" }
+iced_widget = { git = "https://github.com/phantomshift/iced.git", version = "0.14.0-dev", rev = "7e8575e" }
 steam-rs = { git = "https://github.com/phantomshift/steam-rs.git", branch = "get-details"}
 
 [profile.dev]

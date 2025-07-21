@@ -426,7 +426,7 @@ impl Editor {
             })
         });
 
-        column![row![scrollable(buttons_col).width(200), vertical_rule(2)].push_maybe(editor)]
+        column![row![scrollable(buttons_col).width(200), vertical_rule(2)].push(editor)]
             .width(Fill)
             .into()
     }
