@@ -1170,16 +1170,25 @@ impl App {
                         }
                         .to_string();
                         return Task::future(async move {
-                            if let Err(err) = notify_rust::Notification::new()
-                                .appname("LCOMM")
+                            let mut notif = notify_rust::Notification::new();
+                            notif
+                                .appname("LXCOMM")
                                 .summary("Downloads Complete")
                                 .body("All downloads in the queue have completed")
-                                .hint(notify_rust::Hint::Category("TransferComplete".to_string()))
-                                .hint(notify_rust::Hint::Resident(true))
                                 .sound_name(&sound_name)
-                                .timeout(-1)
-                                .show()
-                            {
+                                .timeout(-1);
+
+                            #[cfg(target_os = "linux")]
+                            notif
+                                .hint(notify_rust::Hint::Category("TransferComplete".to_string()))
+                                .hint(notify_rust::Hint::Resident(true));
+
+                            #[cfg(target_os = "linux")]
+                            let result = notif.show_async().await;
+                            #[cfg(not(target_os = "linux"))]
+                            let result = tokio::task::spawn_blocking(move || notif.show()).await;
+
+                            if let Err(err) = result {
                                 eprintln!("Error sending notification: {err:?}");
                             }
                             Message::None
