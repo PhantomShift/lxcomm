@@ -138,6 +138,15 @@ At this point you should be ready to start doing more significant modifications.
 Go crazy and break LXCOMM, bug reports and feedback are greatly appreciated.
 Send those aliens crying back to their Elders, Commander.
 
+## Other Platforms
+
+The main intended place to be running the program is on Linux,
+but at a best effort, LXCOMM is written to be cross-platform.
+However, in particular, macOS cannot be fully verified as working
+by me as I do not have a machine to develop on.
+Regardless, I am very much open to receiving suggestions or pull requests
+for platform-specific fixes.
+
 ## Tracking Ideas
 
 In no particular order:
@@ -146,7 +155,7 @@ In no particular order:
 - [x] Text editor + diffing for per-profile mod ini settings
 - [x] On detailed view open, resolve unknown dependencies in the background
 - [x] Filter library with option for [fuzzy finding](https://github.com/Blakeinstein/fuse-rust)
-- [ ] (Blocked on #1) Check for updates without having to invoke downloads on all mods (build manifest file from scratch and then try running `steamcmd +workshop_status`?)
+- [ ] (Blocked on [#1](https://github.com/PhantomShift/lxcomm/issues/1)) Check for updates without having to invoke downloads on all mods (build manifest file from scratch and then try running `steamcmd +workshop_status`?)
 - [x] Automatically find game installations and folders (using [walkdir](https://github.com/BurntSushi/walkdir)?)
 - [x] Options for ranking search results in browsing
 - [ ] Per-profile character pools
