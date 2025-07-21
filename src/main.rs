@@ -3366,7 +3366,7 @@ impl App {
             if let Ok(size) = files::get_size(files::get_item_directory(
                 &self.settings.download_directory,
                 id,
-            )) && size == expected_size
+            )) && size >= (expected_size as f32 * 0.9) as u64
             {
                 return true;
             } else {
