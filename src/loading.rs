@@ -98,6 +98,14 @@ pub fn build_mod_environment<D: AsRef<Path>>(
         let files = files::get_item_directory(download_dir.as_ref(), *id);
 
         let dest = ACTIVE_MODS_DIR.join(&data.dlc_name);
+
+        if dest.try_exists()? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("Mod with DLCName {} is defined twice", &data.dlc_name),
+            ));
+        }
+
         std::fs::create_dir_all(&dest)?;
 
         for entry in std::fs::read_dir(files)? {
@@ -208,23 +216,21 @@ pub fn link_mod_environment<D: AsRef<Path>>(
         std::fs::create_dir(&config_dest)?;
     }
     let default_mod_options = config_dest.join("DefaultModOptions.ini");
-    if default_mod_options.try_exists()? {
-        if !default_mod_options
+    if default_mod_options.try_exists()?
+        && !default_mod_options
             .with_added_extension("bak")
             .try_exists()?
-        {
-            std::fs::copy(
-                &default_mod_options,
-                default_mod_options.with_added_extension("bak"),
-            )?;
-        }
-        std::fs::remove_file(&default_mod_options)?;
+    {
+        std::fs::copy(
+            &default_mod_options,
+            default_mod_options.with_added_extension("bak"),
+        )?;
     }
 
     write_mod_list(
         profile,
         metadata,
-        std::fs::File::create_new(default_mod_options)?,
+        std::fs::File::create(default_mod_options)?,
     )?;
 
     files::link_dirs(ACTIVE_MODS_DIR.as_path(), mods_dest)?;
@@ -287,7 +293,6 @@ pub fn bootstrap_load_profile<DL: AsRef<Path>, DS: AsRef<Path>, L: AsRef<Path>>(
     destination: DS,
     local_path: L,
 ) -> Result<(), std::io::Error> {
-    build_active_config(download_dir.as_ref(), profile)?;
     build_mod_environment(download_dir.as_ref(), metadata, profile)?;
     link_mod_environment(profile, metadata, destination.as_ref())?;
     link_profile_local_files(profile, local_path.as_ref())?;

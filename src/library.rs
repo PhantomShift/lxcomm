@@ -234,6 +234,42 @@ impl Profile {
                         .map(CompatibilityIssue::Incompatible),
                 );
 
+                if let Some(data) = metadata.get(id) {
+                    issues.extend(self.items.keys().filter_map(|other_id| {
+                        if id != other_id {
+                            if let Some(other) = metadata.get(other_id)
+                                && data.dlc_name == other.dlc_name
+                            {
+                                Some(CompatibilityIssue::Overlapping(
+                                    format!("{} ({})", other.title, other.published_file_id),
+                                    vec![other.dlc_name.clone()],
+                                ))
+                            } else if let Some(other) = library.compatibility.get(other_id) {
+                                let intersect = other
+                                    .ignore_required
+                                    .intersection(&compat.ignore_required)
+                                    .cloned()
+                                    .collect::<Vec<_>>();
+                                if intersect.is_empty() {
+                                    None
+                                } else {
+                                    let conflict = metadata
+                                        .get(other_id)
+                                        .map(|other| {
+                                            format!("{} ({})", other.title, other.published_file_id)
+                                        })
+                                        .unwrap_or_else(|| format!("UNKNOWN ({other_id})"));
+                                    Some(CompatibilityIssue::Overlapping(conflict, intersect))
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }));
+                }
+
                 if let Some(details) = cache.get_details(*id) {
                     issues.extend(details.children.iter().filter_map(|child| {
                         if let Ok(child_id) = child.published_file_id.parse::<u32>()
@@ -282,6 +318,8 @@ pub enum CompatibilityIssue {
     MissingRequired(String),
     /// Conflicts with a mod listed by their XComGame.ini
     Incompatible(String),
+    /// Provides the same DLCName(s)
+    Overlapping(String, Vec<String>),
     /// The mod is missing its data
     Unknown,
 }

@@ -2102,6 +2102,9 @@ impl App {
                                         library::CompatibilityIssue::Incompatible(dlc_name) => {
                                             format!("Incompatible Mod: {dlc_name}")
                                         },
+                                        library::CompatibilityIssue::Overlapping(name, provides) => {
+                                            format!("{name} Provides Same DLCNames: {}", provides.iter().join(", "))
+                                        },
                                         library::CompatibilityIssue::Unknown => {
                                             "Missing Info".to_string()
                                         },
