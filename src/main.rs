@@ -62,6 +62,7 @@ pub mod platform;
 pub mod steam_manifest;
 pub mod steamcmd;
 pub mod web;
+pub mod widgets;
 pub mod xcom_mod;
 
 const XCOM_APPID: u32 = 268500;
@@ -1989,12 +1990,9 @@ impl App {
                             text("Mods").size(20),
                             horizontal_space(),
                             button("View Save").on_press(Message::ProfileViewSaveRequested(profile.id)),
-                            tooltip(
+                            tooltip!(
                                 button("Import Save").style(button::danger).on_press(Message::ProfileImportSaveRequested(profile.id)),
-                                container("Note that this will overwrite any save data currently in the profile.")
-                                    .padding(16)
-                                    .style(container::rounded_box),
-                                tooltip::Position::FollowCursor
+                                "Note that this will overwrite any save data currently in the profile.",
                             ),
                             // TODO - add confirmation
                             button("Delete Profile")
@@ -2050,9 +2048,9 @@ impl App {
                             .width(Fill);
 
                             if !issues.is_empty() {
-                                tooltip(
+                                tooltip!(
                                     button,
-                                    container(column(issues.into_iter().map(|s| text(s).into()))).style(container::rounded_box).padding(16),
+                                    column(issues.into_iter().map(|s| text(s).into())),
                                     tooltip::Position::Bottom,
                                 ).into()
                             } else {
@@ -2142,11 +2140,9 @@ impl App {
                             .collect(),
                     ));
 
-                tooltip(
+                tooltip!(
                     button("Download Missing").on_press_maybe(on_press),
-                    container("This only downloads direct dependencies")
-                        .style(container::bordered_box)
-                        .padding(16),
+                    "This only downloads direct dependencies",
                     tooltip::Position::Bottom,
                 )
             });
@@ -2465,11 +2461,9 @@ impl App {
                     "Game Directory",
                     row![
                         button(symbols::folder()).on_press(Message::LoadPickGameDirectory),
-                        // TODO - add tooltip convenience function, as all tooltips in the program are generally syled the same
-                        tooltip(
+                        tooltip!(
                             button(symbols::magnifying_glass()).on_press(Message::LoadFindGameRequested),
-                            container("Automatically find game directory").style(container::rounded_box).padding(16),
-                            tooltip::Position::FollowCursor,
+                            "Automatically find game directory",
                         ),
                         text_input(
                             "/path/to/XCom2-WarOfTheChosen",
@@ -2486,13 +2480,11 @@ impl App {
                 LabeledFrame::new("Local Directory",
                     row![
                         button(symbols::folder()).on_press(Message::LoadPickLocalDirectory),
-                        tooltip(
+                        tooltip!(
                             button(symbols::magnifying_glass()).on_press(Message::LoadFindLocalRequested),
-                            container("Automatically find. Note this is likely to fail if you haven't launched the game at least once before.")
-                                .style(container::rounded_box).padding(16),
-                            tooltip::Position::FollowCursor,
+                            "Automatically find. Note this is likely to fail if you haven't launched the game at least once before.",
                         ),
-                        tooltip(
+                        tooltip!(
                             text_input(
                                 "/path/to/Documents/My Games/XCOM2 War of the Chosen/XComGame",
                                 &self
@@ -2502,10 +2494,7 @@ impl App {
                                     .map(|p| p.display().to_string())
                                     .unwrap_or_default()
                             ).on_input(|s| Message::LoadSetLocalDirectory(PathBuf::from(s))),
-                            container("This is the path where the game expects find your local data (e.g. saves). Files/folders that are modified will have backups automatically created.")
-                                .style(container::rounded_box)
-                                .padding(16),
-                            tooltip::Position::FollowCursor,
+                            container("This is the path where the game expects find your local data (e.g. saves). Files/folders that are modified will have backups automatically created."),
                         ),
                     ],
                 ),
@@ -2627,11 +2616,9 @@ impl App {
             .spacing(6)
             .height(32),
             row![
-                tooltip(
+                tooltip!(
                     toggler(self.library.filter_fuzzy).on_toggle(Message::LibraryFilterToggleFuzzy),
-                    container("Fuzzy Matching")
-                        .style(container::rounded_box)
-                        .padding(16),
+                    "Fuzzy Matching",
                     tooltip::Position::Bottom,
                 ),
                 text_input("Filter", &self.library.filter_query)
