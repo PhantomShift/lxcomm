@@ -204,7 +204,6 @@ pub enum Message {
     LoadSetLocalDirectory(PathBuf),
     LoadPickLaunchCommand,
     LoadSetLaunchCommand(String),
-    // TODO - Split args into explicit pairs
     LoadAddLaunchArgs,
     LoadRemoveLaunchArgs(usize),
     LoadEditArgKey(usize, String),
@@ -2537,7 +2536,6 @@ impl App {
         )
     }
 
-    // TODO - Sorting, filtering
     fn library_page(&self) -> Element<'_, Message> {
         let mut grid = iced_aw::grid!()
             .column_spacing(8)
