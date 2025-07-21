@@ -48,13 +48,7 @@ use serde::{Deserialize, Serialize};
 use steam_rs::{self, Steam, published_file_service::query_files::PublishedFiles};
 use strum::{Display, EnumIter, IntoEnumIterator, VariantArray};
 
-#[cfg(target_os = "windows")]
 use crate::extensions::DetailsExtension;
-#[cfg(target_os = "linux")]
-use crate::extensions::{
-    DetailsExtension,
-    zbus_ext::{NotificationHint, NotificationParameters, NotificationSender},
-};
 use crate::mod_edit::EditorMessage;
 use crate::platform::symbols;
 
@@ -1167,10 +1161,8 @@ impl App {
                 self.completed_downloads.insert(id);
                 self.scan_downloads();
 
-                #[cfg(target_os = "linux")]
                 if self.ongoing_downloads.is_empty() && self.download_queue.is_empty() {
                     if self.settings.notify_on_download_complete {
-                        let connection = zbus::Connection::from(self.dbus_connection.clone());
                         let sound_name = if self.settings.notify_with_sound {
                             "complete-download"
                         } else {
@@ -1178,22 +1170,15 @@ impl App {
                         }
                         .to_string();
                         return Task::future(async move {
-                            if let Err(err) = connection
-                                .send_notification(NotificationParameters {
-                                    app_name: "LXCOMM".to_string(),
-                                    summary: "Downloads Complete".to_string(),
-                                    body: "All downloads in the queue have completed.".to_string(),
-                                    hints: NotificationHint {
-                                        category:
-                                            extensions::zbus_ext::NotificationCategory::TransferComplete,
-                                        resident: true,
-                                        sound_name,
-                                        ..Default::default()
-                                    },
-                                    expire_timeout: -1,
-                                    ..Default::default()
-                                })
-                                .await
+                            if let Err(err) = notify_rust::Notification::new()
+                                .appname("LCOMM")
+                                .summary("Downloads Complete")
+                                .body("All downloads in the queue have completed")
+                                .hint(notify_rust::Hint::Category("TransferComplete".to_string()))
+                                .hint(notify_rust::Hint::Resident(true))
+                                .sound_name(&sound_name)
+                                .timeout(-1)
+                                .show()
                             {
                                 eprintln!("Error sending notification: {err:?}");
                             }
@@ -3570,9 +3555,7 @@ impl AppSessionInterface {
 // #[tokio::main]
 fn main() -> eyre::Result<()> {
     // Potential TODO - Find a more graceful way of solving this cross-platform
-    // Also be more consistent about target_os = "windows" vs not(target_os = "linux") and vice versa
-    // (I probably won't support Apple anyways, you guys can go have fun gaming on that)
-    #[cfg(target_os = "windows")]
+    #[cfg(not(target_os = "linux"))]
     let lock = {
         let lock = single_instance::SingleInstance::new("LXCOMM_SESSION_LOCK");
         if let Ok(lock) = lock

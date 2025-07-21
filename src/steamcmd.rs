@@ -130,13 +130,18 @@ pub fn which_steamcmd(given: &Option<PathBuf>) -> Result<PathBuf> {
 /// Returns the standard command unaltered if neither are found on the system,
 /// which may lead to degraded functionality.
 fn steamcmd_command(given: &Option<PathBuf>) -> Result<std::process::Command> {
+    #[cfg(target_os = "macos")]
+    static STDBUF: &str = "gstdbuf";
+    #[cfg(not(target_os = "macos"))]
+    static STDBUF: &str = "stdbuf";
+
     let steamcmd = which_steamcmd(given)?;
 
     if let Ok(unbuffer) = which("unbuffer") {
         let mut command = std::process::Command::new(unbuffer);
         command.arg(steamcmd);
         Ok(command)
-    } else if let Ok(stdbuf) = which("stdbuf") {
+    } else if let Ok(stdbuf) = which(STDBUF) {
         let mut command = std::process::Command::new(stdbuf);
         command.arg("-o0").arg(steamcmd);
         Ok(command)

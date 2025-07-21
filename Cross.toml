@@ -1,0 +1,4 @@
+# Intended for development use only
+[target.aarch64-apple-darwin]
+image = "ghcr.io/shepherdjerred/macos-cross-compiler"
+zig = true

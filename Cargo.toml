@@ -40,19 +40,29 @@ tokio = "1.46.0"
 tokio-util = { version = "0.7.15", features = ["rt"] }
 walkdir = "2.5.0"
 which = "8.0.0"
+notify-rust = "4.11.7"
 
-[target.'cfg(windows)'.dependencies]
+[target.'cfg(not(target_os = "linux"))'.dependencies]
 single-instance = "0.3.3"
 
-[target.'cfg(not(windows))'.dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 zbus = "5.7.1"
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
 iced_fonts = { git = "https://github.com/Redhawk18/iced_fonts.git", version = "0.2.0", features = ["fontawesome"] }
+
 
 [dependencies.iced]
 version = "0.14.0-dev"
-features = ["advanced", "highlighter", "image", "lazy", "markdown", "svg", "tokio"]
+default-features = false
+features = ["wgpu", "tiny-skia", "web-colors", "auto-detect-theme", "advanced", "highlighter", "image", "lazy", "markdown", "svg", "tokio", "thread-pool"]
 # features = ["advanced", "image", "lazy", "markdown", "svg", "tokio"]
 # git = "https://github.com/iced-rs/iced"
+
+[dependencies.iced_highlighter]
+version = "0.14.0-dev"
+default-features = false
+features = ["syntect-default-fancy"]
 
 [dependencies.iced_aw]
 version = "0.13.0-dev"
@@ -65,6 +75,7 @@ branch = "redhawk-more-highlights"
 iced = { git = "https://github.com/phantomshift/iced.git", version = "0.14.0-dev", rev = "7e8575e" }
 iced_core = { git = "https://github.com/phantomshift/iced.git", version = "0.14.0-dev", rev = "7e8575e" }
 iced_widget = { git = "https://github.com/phantomshift/iced.git", version = "0.14.0-dev", rev = "7e8575e" }
+iced_highlighter = { git = "https://github.com/phantomshift/iced.git", version = "0.14.0-dev", rev = "7e8575e" }
 steam-rs = { git = "https://github.com/phantomshift/steam-rs.git", branch = "get-details"}
 
 [profile.dev]
