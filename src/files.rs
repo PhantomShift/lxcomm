@@ -14,8 +14,13 @@ use iced::{
     },
 };
 use itertools::{EitherOrBoth, Itertools};
-use notify::{RecommendedWatcher, Watcher};
+use notify::Watcher;
 use steam_rs::published_file_service::query_files;
+
+#[cfg(target_os = "windows")]
+use notify::PollWatcher as PlatformWatcher;
+#[cfg(not(target_os = "windows"))]
+use notify::RecommendedWatcher as PlatformWatcher;
 
 use crate::{DATA_DIR, Message, XCOM_APPID};
 
@@ -223,17 +228,16 @@ impl Default for Cache {
 }
 
 // Based on https://github.com/notify-rs/notify/blob/main/examples/async_monitor.rs
-pub fn async_watcher()
--> notify::Result<(RecommendedWatcher, Receiver<notify::Result<notify::Event>>)> {
+pub fn async_watcher() -> notify::Result<(PlatformWatcher, Receiver<notify::Result<notify::Event>>)>
+{
     let (mut tx, rx) = iced::futures::channel::mpsc::channel(100);
-
-    let watcher = RecommendedWatcher::new(
+    let watcher = PlatformWatcher::new(
         move |res| {
             iced::futures::executor::block_on(async {
                 tx.send(res).await.unwrap();
             })
         },
-        notify::Config::default(),
+        notify::Config::default().with_poll_interval(std::time::Duration::from_millis(200)),
     )?;
 
     Ok((watcher, rx))
@@ -315,11 +319,16 @@ pub fn monitor_file_changes(path: PathBuf) -> (Task<MonitorFileChange>, iced::ta
                         }
                         notify::Event {
                             kind:
-                                notify::EventKind::Modify(notify::event::ModifyKind::Data(
-                                    notify::event::DataChange::Content
-                                    | notify::event::DataChange::Size
-                                    | notify::event::DataChange::Any,
-                                )),
+                                notify::EventKind::Modify(
+                                    notify::event::ModifyKind::Data(
+                                        notify::event::DataChange::Content
+                                        | notify::event::DataChange::Size
+                                        | notify::event::DataChange::Any,
+                                    )
+                                    | notify::event::ModifyKind::Metadata(
+                                        notify::event::MetadataKind::WriteTime,
+                                    ),
+                                ),
                             ..
                         } => {
                             let path = path.clone();
