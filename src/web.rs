@@ -9,6 +9,7 @@ use std::{
 use crate::{
     CACHE_DIR, Message, XCOM_APPID,
     extensions::{SplitAtBoundary, URLArrayListable},
+    files,
 };
 use eyre::Result;
 use iced::{
@@ -154,6 +155,101 @@ pub fn setup_background_resolver() -> impl Stream<Item = Message> {
             }
         }
     })
+}
+
+macro_rules! async_retry {
+    ($attempt:expr, $tries:expr, $debounce:expr $(,)*) => {{
+        let max: usize = $tries;
+        let mut attempts = 0;
+        loop {
+            match $attempt.await {
+                Ok(result) => break Ok(result),
+                Err(err) if attempts >= max => break Err(err),
+                _ => {
+                    tokio::time::sleep($debounce).await;
+                    attempts += 1;
+                }
+            }
+        }
+    }};
+
+    ($attempt:expr, $tries:expr $(,)*) => {
+        async_retry!($attempt, $tries, std::time::Duration::ZERO)
+    };
+}
+
+pub async fn resolve_all_dependencies(
+    id: u32,
+    client: Steam,
+    mut cache: files::Cache,
+) -> Result<Arc<BTreeSet<u32>>> {
+    let mut dependencies = BTreeSet::new();
+    let mut unresolved = vec![id];
+    while !unresolved.is_empty() {
+        let mut had_cached = true;
+        while had_cached {
+            had_cached = false;
+            let mut to_extend = Vec::with_capacity(unresolved.len());
+
+            unresolved.retain(|id| {
+                if let Some(details) = cache.get_details(*id) {
+                    had_cached = true;
+                    dependencies.insert(*id);
+                    to_extend.extend(
+                        details
+                            .children
+                            .iter()
+                            .filter_map(|child| child.published_file_id.parse::<u32>().ok()),
+                    );
+                    false
+                } else {
+                    true
+                }
+            });
+
+            unresolved.extend(to_extend);
+        }
+
+        if unresolved.is_empty() {
+            break;
+        }
+
+        unresolved.sort();
+        unresolved.dedup();
+
+        let resolved = async_retry!(
+            get_mod_details(client.clone(), &unresolved),
+            5,
+            std::time::Duration::from_millis(250)
+        )?;
+
+        unresolved.clear();
+
+        for file in resolved {
+            unresolved.extend(
+                file.children
+                    .iter()
+                    .filter_map(|child| child.published_file_id.parse::<u32>().ok()),
+            );
+            let id = file.published_file_id.parse::<u32>()?;
+            dependencies.insert(id);
+            if let Err(err) = cache.insert_details(id, &Arc::new(file)) {
+                eprintln!("Error writing dependency details to cache: {err:?}");
+            }
+        }
+    }
+
+    Ok(Arc::new(dependencies))
+}
+
+/// Prefer async if it is not known that all
+/// unknown dependencies have been resolved.
+pub fn resolve_all_dependencies_blocking(
+    id: u32,
+    client: Steam,
+    cache: files::Cache,
+) -> Result<Arc<BTreeSet<u32>>> {
+    iced::futures::executor::block_on(resolve_all_dependencies(id, client, cache))
 }
 
 /// XCOM2 Workshop item tags. This is assumed to be a static list.

@@ -42,15 +42,16 @@ use iced::{
     },
 };
 use iced_aw::{card, widget::LabeledFrame};
+use itertools::Itertools;
 use ringmap::RingMap;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use steam_rs::{self, Steam, published_file_service::query_files::PublishedFiles};
 use strum::{Display, EnumIter, IntoEnumIterator, VariantArray};
 
-use crate::extensions::DetailsExtension;
 use crate::mod_edit::EditorMessage;
 use crate::platform::symbols;
+use crate::{extensions::DetailsExtension, web::resolve_all_dependencies};
 
 pub mod extensions;
 pub mod files;
@@ -133,6 +134,7 @@ pub enum Message {
     QueryFilesLoaded(PublishedFiles),
 
     AsyncDialogResolve(AsyncDialogKey, usize),
+    AsyncDialogCancelled(AsyncDialogKey),
     AbortTask(AppAbortKey),
 
     ApiKeyRequest,
@@ -169,6 +171,8 @@ pub enum Message {
     DownloadCancelRequested(u32),
     SteamCMDCheckUpdateRequested,
     SteamCMDCheckUpdateCompleted(Vec<u32>),
+    DownloadAllRequested(u32),
+    DownloadAllConfirmed(Arc<BTreeSet<u32>>),
 
     Settings(SettingsMessage),
     ModEditor(EditorMessage),
@@ -180,7 +184,7 @@ pub enum Message {
     LibraryAddToProfileRequest,
     LibraryAddToProfileToggleAll(bool),
     LibraryAddToProfileToggled(usize, bool),
-    LibraryAddToProfileConfirm(bool),
+    LibraryAddToProfileConfirm(Vec<u32>),
     LibraryDeleteRequest,
     LibraryDeleteConfirm,
     LibraryFilterUpdateQuery(String),
@@ -217,12 +221,14 @@ pub enum Message {
     LoadFindLocalMatched(PathBuf),
     LoadFindLocalResolved(PathBuf),
 
-    ItemDetailsAddToLibraryRequest(u32),
+    ItemDetailsAddToLibraryRequest(Vec<u32>),
+    ItemDetailsAddToLibraryAllRequest(u32),
 
     SetPage(AppPage),
     SetBusy(bool),
     SetBusyMessage(String),
     DisplayError(String, String),
+    OpenModal(Arc<AppModal>),
     CloseModal,
     EscapeModal,
 
@@ -281,11 +287,11 @@ pub enum AppPage {
     GameLogs,
 }
 
-#[derive(Debug, Derivative)]
+#[derive(Debug, Derivative, Clone)]
 #[derivative(PartialEq)]
-enum AppModal {
+pub enum AppModal {
     ApiKeyRequest,
-    AddToProfileRequest,
+    AddToProfileRequest(Vec<u32>),
     LibraryDeleteRequest,
     SteamGuardCodeRequest,
     ProfileAddRequest,
@@ -322,6 +328,7 @@ pub enum AsyncDialogStrategy {
 pub enum AsyncDialogKey {
     GameFind,
     LocalFind,
+    DownloadAllConfirm,
 }
 
 impl AppModal {
@@ -329,7 +336,7 @@ impl AppModal {
         use AppModal::*;
         match self {
             ApiKeyRequest => false,
-            AddToProfileRequest => true,
+            AddToProfileRequest(_) => true,
             LibraryDeleteRequest => true,
             SteamGuardCodeRequest => false,
             ProfileAddRequest => true,
@@ -746,6 +753,9 @@ impl App {
                     });
                 }
             }
+            Message::AsyncDialogCancelled(key) => {
+                self.modal_stack.retain(|modal| !matches!(modal, AppModal::AsyncDialog { key: this, .. } if *this == key));
+            }
             Message::AbortTask(key) => {
                 if let Some(handle) = self.abortable_handles.remove(&key) {
                     handle.abort()
@@ -983,6 +993,9 @@ impl App {
                     ));
                 }
                 self.current_page = new;
+            }
+            Message::OpenModal(modal) => {
+                self.modal_stack.push(Arc::unwrap_or_clone(modal));
             }
             Message::CloseModal => {
                 self.modal_stack.pop();
@@ -1237,6 +1250,58 @@ impl App {
             Message::SteamCMDCheckUpdateCompleted(ids) => {
                 println!("The following ids need to be updated: {ids:#?}");
             }
+            Message::DownloadAllRequested(id) => {
+                let client = Steam::new(self.api_key.expose_secret());
+                let cache = self.file_cache.clone();
+                let downloaded = self.downloaded.keys().cloned().collect::<Vec<_>>();
+                return Task::done(Message::SetBusyMessage(
+                    "Resolving Dependencies...".to_string(),
+                ))
+                .chain(Task::future({let cache = cache.clone(); async move {
+                    web::resolve_all_dependencies(id, client, cache).await
+                }}).then(move |result| {
+                    match result {
+                        Ok(to_download) => {
+                            let mut to_download = Arc::unwrap_or_clone(to_download);
+                            to_download.retain(|id| !downloaded.contains(id));
+                            if to_download.is_empty() {
+                                return Task::done(Message::display_error(
+                                    "Already Downloaded", 
+                                    "All dependencies listed by Steam have already been downloaded."
+                                ));
+                            }
+
+                            let list = to_download.iter().map(|&id| {
+                                format!("{} ({id})", cache.get_details(id).as_deref().map(|f| f.title.as_str()).unwrap_or("UNKNOWN"))
+                            }).join("\n");
+                            let (modal, mut rec) = AppModal::async_dialog(
+                                AsyncDialogKey::DownloadAllConfirm,
+                                "Download All?",
+                                format!("The following items have not been downloaded yet:\n{list}"),
+                                vec!["No".to_string(), "Yes".to_string()],
+                                AsyncDialogStrategy::Replace,
+                            );
+                            Task::done(Message::OpenModal(Arc::new(modal))).chain(Task::future(async move {
+                                match rec.next().await {
+                                    Some(1) => Message::DownloadAllConfirmed(Arc::new(to_download)),
+                                    _ => Message::None
+                                }
+                            }))
+                        }
+                        Err(err) => {
+                            Task::done(Message::display_error("Error Resolving Dependencies", format!(
+                                "An error occured while trying to resolve dependencies. Original error:\n{err:?}"
+                            )))
+                        }
+                    }
+                })).chain(Task::done(Message::SetBusy(false)));
+            }
+            Message::DownloadAllConfirmed(ids) => {
+                return Task::batch(
+                    ids.iter()
+                        .map(|id| Task::done(Message::SteamCMDDownloadRequested(*id))),
+                );
+            }
 
             Message::LibraryToggleAll(toggle) => {
                 self.library
@@ -1269,7 +1334,9 @@ impl App {
                 for profile in self.save.profiles.values_mut() {
                     profile.add_selected = false;
                 }
-                self.modal_stack.push(AppModal::AddToProfileRequest);
+                self.modal_stack.push(AppModal::AddToProfileRequest(
+                    self.library.items.keys().copied().collect(),
+                ));
             }
             Message::LibraryAddToProfileToggleAll(toggled) => {
                 self.save
@@ -1283,22 +1350,25 @@ impl App {
                     .entry(id)
                     .and_modify(|profile| profile.add_selected = toggle);
             }
-            Message::LibraryAddToProfileConfirm(confirmed) => {
-                if confirmed {
-                    for profile in self
-                        .save
-                        .profiles
-                        .values_mut()
-                        .filter(|profile| profile.add_selected)
-                    {
-                        for item in self.library.iter_selected() {
-                            profile
-                                .items
-                                .entry(item.id)
-                                .or_insert_with(library::LibraryItemSettings::default);
-                        }
+            Message::LibraryAddToProfileConfirm(ids) => {
+                for profile in self
+                    .save
+                    .profiles
+                    .values_mut()
+                    .filter(|profile| profile.add_selected)
+                {
+                    for &item in ids.iter() {
+                        profile
+                            .items
+                            .entry(item)
+                            .or_insert_with(library::LibraryItemSettings::default);
                     }
-                };
+                    profile.update_compatibility_issues(
+                        self.file_cache.clone(),
+                        &self.metadata,
+                        &self.library,
+                    );
+                }
                 self.modal_stack.pop();
             }
             Message::LibraryDeleteRequest => self.modal_stack.push(AppModal::LibraryDeleteRequest),
@@ -1763,12 +1833,27 @@ impl App {
                 return Task::done(Message::SetBusy(false));
             }
 
-            Message::ItemDetailsAddToLibraryRequest(item_id) => {
-                self.library
-                    .items
-                    .iter_mut()
-                    .for_each(|(id, item)| item.selected = *id == item_id);
-                self.modal_stack.push(AppModal::AddToProfileRequest);
+            Message::ItemDetailsAddToLibraryRequest(ids) => {
+                self.modal_stack.push(AppModal::AddToProfileRequest(ids));
+            }
+            Message::ItemDetailsAddToLibraryAllRequest(id) => {
+                let client = Steam::new(self.api_key.expose_secret());
+                let cache = self.file_cache.clone();
+                return Task::done(Message::SetBusyMessage(
+                    "Resolving dependencies...".to_string(),
+                ))
+                .chain(Task::future(async move {
+                    match resolve_all_dependencies(id, client, cache).await {
+                        Ok(dependencies) => Message::ItemDetailsAddToLibraryRequest(
+                            dependencies.iter().copied().collect(),
+                        ),
+                        Err(err) => Message::display_error(
+                            "Error Resolving Dependencies",
+                            format!("An error occurred while resolving dependencies:\n{err:?}"),
+                        ),
+                    }
+                }))
+                .chain(Task::done(Message::SetBusy(false)));
             }
 
             #[cfg(target_os = "linux")]
@@ -2112,41 +2197,6 @@ impl App {
                 .then_some(Message::SteamCMDDownloadRequested(id)),
         );
 
-        let missing_ids = file
-            .children
-            .iter()
-            .filter_map(|c| {
-                if let Ok(id) = c.published_file_id.parse::<u32>()
-                    && !self.item_downloaded(id)
-                {
-                    Some(id)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        let download_missing = missing_ids
-            .iter()
-            .any(|&id| !self.item_downloaded(id))
-            .then(|| {
-                let on_press = missing_ids
-                    .iter()
-                    .all(|&id| !self.is_downloading(id))
-                    .then_some(Message::Chained(
-                        missing_ids
-                            .into_iter()
-                            .map(Message::SteamCMDDownloadRequested)
-                            .collect(),
-                    ));
-
-                tooltip!(
-                    button("Download Missing").on_press_maybe(on_press),
-                    "This only downloads direct dependencies",
-                    tooltip::Position::Bottom,
-                )
-            });
-
         container(
             container(column![
                 row![
@@ -2190,9 +2240,16 @@ impl App {
                     .push(row![
                         download_button,
                         button("Add to Profile")
-                            .on_press(Message::ItemDetailsAddToLibraryRequest(id)),
+                            .on_press(Message::ItemDetailsAddToLibraryRequest(vec![id])),
                     ])
-                    .push(download_missing)
+                    .push(row![
+                        file.children.is_empty().not().then_some(
+                            button("Download All Dependencies")
+                                .on_press(Message::DownloadAllRequested(id))
+                        ),
+                        button("Add All Dependencies to Profile")
+                            .on_press(Message::ItemDetailsAddToLibraryAllRequest(id))
+                    ])
                     .push(
                         self.item_downloaded(id).then_some(
                             button("Delete")
@@ -2407,7 +2464,7 @@ impl App {
                         }
                         AppModal::LibraryDeleteRequest => self.library_delete_request_modal(),
                         AppModal::ProfileAddRequest => self.profile_add_modal(),
-                        AppModal::AddToProfileRequest => self.add_to_profile_modal(),
+                        AppModal::AddToProfileRequest(ids) => self.add_to_profile_modal(ids),
                         AppModal::ItemDetailedView(id) => self.view_item_detailed(*id),
                         dialog @ AppModal::AsyncDialog {
                             strategy: AsyncDialogStrategy::Stack | AsyncDialogStrategy::Replace,
@@ -3122,7 +3179,7 @@ impl App {
         .into()
     }
 
-    fn add_to_profile_modal(&self) -> Element<'_, Message> {
+    fn add_to_profile_modal<'a>(&'a self, items: &'a [u32]) -> Element<'a, Message> {
         let grid = iced_aw::grid![iced_aw::grid_row![
             checkbox(
                 "",
@@ -3149,11 +3206,11 @@ impl App {
         .foot(row![
             button("Cancel")
                 .style(button::danger)
-                .on_press(Message::LibraryAddToProfileConfirm(false)),
+                .on_press(Message::LibraryAddToProfileConfirm(Vec::new())),
             horizontal_space(),
             button("Confirm")
                 .style(button::success)
-                .on_press(Message::LibraryAddToProfileConfirm(true)),
+                .on_press_with(|| Message::LibraryAddToProfileConfirm(items.to_vec())),
         ])
         .width(300)
         .into()
@@ -3213,11 +3270,7 @@ impl App {
             iced::window::close_requests().map(|_| Message::CloseAppRequested),
             iced::event::listen_with(|ev, _status, _id| match ev {
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                    key:
-                        iced::keyboard::Key::Named(
-                            iced::keyboard::key::Named::Escape
-                            | iced::keyboard::key::Named::Backspace,
-                        ),
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
                     ..
                 }) => Some(Message::EscapeModal),
                 iced::Event::Mouse(iced::mouse::Event::ButtonReleased(

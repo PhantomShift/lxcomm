@@ -166,6 +166,7 @@ In no particular order:
 - [ ] Copying/imporing+exporting profiles-
 - [ ] Disk cache trimming
 - [ ] Ability to enter workshop ID directly for browsing or downloading (due to unreliable browsing results)
+- [ ] Ability to pause downloads
 
 ## License
 
