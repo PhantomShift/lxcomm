@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
+    sync::Arc,
 };
 
 use iced::{
@@ -11,6 +12,8 @@ use iced::{
         button, column, container, row, scrollable, text, text_editor, text_input, vertical_rule,
     },
 };
+use itertools::Itertools;
+use moka::sync::Cache;
 use similar::ChangeTag;
 
 use crate::{App, Message, PROFILES_DIR, files};
@@ -52,20 +55,38 @@ pub enum EditorPage {
 }
 
 // TODO - figure out per item stuff
-#[derive(Default)]
 pub struct Editor {
     pub new_config_name: String,
     pub current_root: Option<PathBuf>,
     pub current_file: Option<String>,
     /// Settings that came as part of the original file
-    pub original_buffers: HashMap<String, String>,
+    pub original_buffers: HashMap<String, PathBuf>,
     /// Settings created by users
     pub custom_buffers: HashSet<String>,
     /// The currently used setting
-    pub saved_buffers: HashMap<String, String>,
+    pub saved_buffers: HashMap<String, PathBuf>,
     /// The transient state of the settings being edited
     pub edit_buffers: HashMap<String, text_editor::Content>,
     pub page: EditorPage,
+    pub original_cache: Cache<PathBuf, Arc<String>>,
+    pub save_cache: Cache<PathBuf, Arc<String>>,
+}
+
+impl Default for Editor {
+    fn default() -> Self {
+        Self {
+            new_config_name: Default::default(),
+            current_root: Default::default(),
+            current_file: Default::default(),
+            original_buffers: Default::default(),
+            custom_buffers: Default::default(),
+            saved_buffers: Default::default(),
+            edit_buffers: Default::default(),
+            page: Default::default(),
+            original_cache: Cache::new(128),
+            save_cache: Cache::new(128),
+        }
+    }
 }
 
 impl Editor {
@@ -73,16 +94,38 @@ impl Editor {
         self.edit_buffers.keys().any(|p| !self.is_saved(p))
     }
 
-    pub fn is_saved<S: AsRef<str>>(&self, name: S) -> bool {
-        let edit = self.edit_buffers.get(name.as_ref()).map(|c| c.text());
-        let trimmed = edit.as_ref().map(|s| s.trim_end());
-        let save = self.saved_buffers.get(name.as_ref()).map(|s| s.trim_end());
-        let original = self
-            .original_buffers
-            .get(name.as_ref())
-            .map(|s| s.trim_end());
+    pub fn get_original<S: AsRef<str>>(&self, name: S) -> Option<Arc<String>> {
+        self.original_buffers.get(name.as_ref()).and_then(|path| {
+            self.original_cache.optionally_get_with_by_ref(path, || {
+                std::fs::read_to_string(path).ok().map(Arc::new)
+            })
+        })
+    }
 
-        trimmed == save || trimmed == original
+    pub fn get_saved<S: AsRef<str>>(&self, name: S) -> Option<Arc<String>> {
+        self.saved_buffers
+            .get(name.as_ref())
+            .and_then(|path| {
+                self.save_cache.optionally_get_with_by_ref(path, || {
+                    std::fs::read_to_string(path).ok().map(Arc::new)
+                })
+            })
+            .or_else(|| self.get_original(name.as_ref()))
+    }
+
+    pub fn is_saved<S: AsRef<str>>(&self, name: S) -> bool {
+        if let Some(edit) = self.edit_buffers.get(name.as_ref()) {
+            let edit = edit.text();
+            if let Some(save) = self.get_saved(name.as_ref()) {
+                edit.trim_end() == save.trim_end()
+            } else if let Some(original) = self.get_original(name.as_ref()) {
+                edit.trim_end() == original.trim_end()
+            } else {
+                false
+            }
+        } else {
+            true
+        }
     }
 
     pub fn get_delete_action<S: AsRef<str>>(&self, name: S) -> DeleteAction {
@@ -98,6 +141,14 @@ impl Editor {
             EditorMessage::NewConfigEdit(s) => self.new_config_name = s,
             EditorMessage::Select(name) => {
                 if self.current_file.as_ref() != Some(&name) {
+                    if !self.edit_buffers.contains_key(&name) {
+                        self.edit_buffers.insert(
+                            name.clone(),
+                            text_editor::Content::with_text(
+                                &self.get_saved(&name).unwrap_or_default(),
+                            ),
+                        );
+                    }
                     self.current_file = Some(name);
                     self.page = EditorPage::IniEditor;
                 }
@@ -113,7 +164,7 @@ impl Editor {
                     .and_modify(|buffer| buffer.perform(action));
             }
             EditorMessage::Create => {
-                self.current_file.as_ref()?;
+                let root = self.current_root.as_ref()?;
 
                 let name = self.new_config_name.trim_end_matches(".ini").to_string();
                 if let Some(s) = ["/", "\\", ".."].iter().find(|s| name.contains(*s)) {
@@ -134,7 +185,8 @@ impl Editor {
                 }
 
                 self.custom_buffers.insert(name.clone());
-                self.saved_buffers.insert(name.clone(), String::new());
+                self.saved_buffers
+                    .insert(name.clone(), root.with_extension("ini"));
                 self.edit_buffers.insert(name, text_editor::Content::new());
             }
             EditorMessage::Delete(name, action) => {
@@ -142,6 +194,7 @@ impl Editor {
                     match action {
                         DeleteAction::Delete => {
                             self.edit_buffers.remove(&name);
+                            self.custom_buffers.remove(&name);
                             if let Some(current) = &self.current_file
                                 && current == &name
                             {
@@ -152,29 +205,29 @@ impl Editor {
                             self.edit_buffers.insert(
                                 name.clone(),
                                 text_editor::Content::with_text(
-                                    self.original_buffers
-                                        .get(&name)
-                                        .map(String::as_str)
-                                        .unwrap_or_default(),
+                                    &self.get_original(&name).unwrap_or_default(),
                                 ),
                             );
                         }
                     }
-                    self.saved_buffers.remove_entry(&name);
-                    if let Err(err) = std::fs::remove_file(root.join(&name).with_extension("ini")) {
+                    if let Some((_, path)) = self.saved_buffers.remove_entry(&name)
+                        && path.exists()
+                        && let Err(err) =
+                            std::fs::remove_file(root.join(&name).with_extension("ini"))
+                    {
                         eprintln!("Error removing {name}: {err:?}");
                     }
                 }
             }
-            EditorMessage::Save(path) => {
-                if let Err(err) = self.save_buffer(path) {
+            EditorMessage::Save(name) => {
+                if let Err(err) = self.save_buffer(name) {
                     eprintln!("Error saving buffer: {err:?}");
                 }
             }
             EditorMessage::SaveAll => {
-                let paths = self.edit_buffers.keys().cloned().collect::<Vec<_>>();
-                for path in paths {
-                    if let Err(err) = self.save_buffer(path) {
+                let names = self.edit_buffers.keys().cloned().collect::<Vec<_>>();
+                for name in names {
+                    if let Err(err) = self.save_buffer(name) {
                         eprintln!("Error saving buffer: {err:?}");
                     }
                 }
@@ -209,8 +262,7 @@ impl Editor {
                                 .map(|s| s.trim_end_matches(".ini").to_owned())
                                 && entry.path().extension().is_some_and(|ext| ext == "ini")
                             {
-                                let s = std::fs::read_to_string(entry.path())?;
-                                self.original_buffers.insert(name, s.clone());
+                                self.original_buffers.insert(name, entry.path());
                             }
                         }
                     };
@@ -239,8 +291,7 @@ impl Editor {
                             .map(|s| s.trim_end_matches(".ini").to_owned())
                             && entry.path().extension().is_some_and(|ext| ext == "ini")
                         {
-                            let s = std::fs::read_to_string(entry.path())?;
-                            self.saved_buffers.insert(name.clone(), s);
+                            self.saved_buffers.insert(name.clone(), entry.path());
                             if !self.original_buffers.contains_key(&name) {
                                 self.custom_buffers.insert(name);
                             }
@@ -259,22 +310,6 @@ impl Editor {
                         path = profile_path.display()
                         },
                     )));
-                }
-
-                for path in self
-                    .original_buffers
-                    .keys()
-                    .chain(self.custom_buffers.iter())
-                {
-                    let buffer = self
-                        .saved_buffers
-                        .get(path)
-                        .or(self.original_buffers.get(path))
-                        .map(String::as_str)
-                        .unwrap_or_default();
-
-                    self.edit_buffers
-                        .insert(path.clone(), text_editor::Content::with_text(buffer));
                 }
 
                 self.current_root = Some(profile_path);
@@ -299,42 +334,46 @@ impl Editor {
 
         let edit = self.edit_buffers.get(name.as_ref()).ok_or(not_found!())?;
 
-        let to_save = self
-            .saved_buffers
-            .entry(name.as_ref().to_owned())
-            .and_modify(|buffer| *buffer = edit.text())
-            .or_insert_with(|| edit.text());
-
+        let to_save = edit.text();
         let path = root.join(name.as_ref()).with_extension("ini");
-        if let Some(original) = self.original_buffers.get(name.as_ref())
-            && to_save == original
+        if let Some(original) = self.get_original(name.as_ref())
+            && to_save == *original
         {
             if path.exists() {
-                std::fs::remove_file(path)?;
+                std::fs::remove_file(&path)?;
             }
         } else {
-            std::fs::write(path, to_save)?;
+            std::fs::write(&path, &to_save)?;
         }
+
+        self.saved_buffers
+            .insert(name.as_ref().to_string(), path.clone());
+        self.save_cache.insert(path, Arc::new(to_save));
 
         Ok(())
     }
 
     pub fn view(&self, state: &App) -> Element<'_, Message> {
-        let buttons = self.edit_buffers.keys().map(|name| {
-            let style = if let Some(sel) = &self.current_file
-                && sel == name
-            {
-                button::secondary
-            } else {
-                button::primary
-            };
-            let marker = if !self.is_saved(name) { " (*)" } else { "" };
-            button(text!("{name}.ini{marker}",))
-                .style(style)
-                .on_press(EditorMessage::Select(name.clone()).into())
-                .width(Fill)
-                .into()
-        });
+        let buttons = self
+            .original_buffers
+            .keys()
+            .chain(self.custom_buffers.iter())
+            .sorted()
+            .map(|name| {
+                let style = if let Some(sel) = &self.current_file
+                    && sel == name
+                {
+                    button::secondary
+                } else {
+                    button::primary
+                };
+                let marker = if !self.is_saved(name) { " (*)" } else { "" };
+                button(text!("{name}.ini{marker}",))
+                    .style(style)
+                    .on_press(EditorMessage::Select(name.clone()).into())
+                    .width(Fill)
+                    .into()
+            });
 
         let buttons_col = column(buttons).push(
             text_input("+ New Config File", &self.new_config_name)
@@ -345,13 +384,13 @@ impl Editor {
 
         let editor = self.current_file.as_ref().and_then(|name| {
             self.edit_buffers.get(name).map(|content| {
-                let original_buffer = self.original_buffers.get(name);
+                let original_buffer = self.get_original(name);
                 let delete = self.get_delete_action(name);
                 let can_delete = {
                     match &delete {
                         DeleteAction::Delete => true,
                         DeleteAction::Reset => {
-                            if let Some(orig) = self.original_buffers.get(name) {
+                            if let Some(orig) = &original_buffer {
                                 content.text().trim_end() != orig.trim_end()
                             } else {
                                 false
