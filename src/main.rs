@@ -305,7 +305,7 @@ enum AppModal {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-enum AsyncDialogStrategy {
+pub enum AsyncDialogStrategy {
     /// Clear any dialogs in the stack with the same ID
     Replace,
     /// Push it onto the stack,

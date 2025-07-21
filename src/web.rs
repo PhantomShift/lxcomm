@@ -282,7 +282,7 @@ impl std::hash::Hash for WorkshopQuery {
 }
 
 impl WorkshopQuery {
-    fn new<S: Into<String>>(query: S) -> Self {
+    pub fn new<S: Into<String>>(query: S) -> Self {
         Self {
             query: query
                 .into()
@@ -291,18 +291,18 @@ impl WorkshopQuery {
         }
     }
 
-    fn with_sort(self, sort: WorkshopSort) -> Self {
+    pub fn with_sort(self, sort: WorkshopSort) -> Self {
         Self { sort, ..self }
     }
 
-    fn with_tags(self, tags: impl IntoIterator<Item = XCOM2WorkshopTag>) -> Self {
+    pub fn with_tags(self, tags: impl IntoIterator<Item = XCOM2WorkshopTag>) -> Self {
         Self {
             tags: BTreeSet::from_iter(tags),
             ..self
         }
     }
 
-    fn as_hashed(&self) -> u64 {
+    pub fn as_hashed(&self) -> u64 {
         let mut hasher = std::hash::DefaultHasher::new();
         self.hash(&mut hasher);
         hasher.finish()
