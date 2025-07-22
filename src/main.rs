@@ -2293,6 +2293,34 @@ impl App {
                 .then_some(Message::SteamCMDDownloadRequested(id)),
         );
 
+        fn handle_url(url: reqwest::Url) -> Message {
+            if url.domain() == Some("steamcommunity.com")
+                && url
+                    .path_segments()
+                    .is_some_and(|mut split| split.nth_back(1) == Some("filedetails"))
+                && let Some(id) = url
+                    .query_pairs()
+                    .find_map(|(name, value)| name.eq("id").then(|| value.parse::<u32>().ok()))
+                    .flatten()
+            {
+                Message::SetViewingItem(id)
+            } else {
+                std::thread::spawn(move || {
+                    if let rfd::MessageDialogResult::Yes = rfd::MessageDialog::new()
+                        .set_title("Warning: External Link")
+                        .set_description(format!(
+                            "This link leads to:\n\n{url}\n\n are you sure you want to go there?"
+                        ))
+                        .set_buttons(rfd::MessageButtons::YesNo)
+                        .show()
+                    {
+                        let _ = opener::open(url.as_str());
+                    }
+                });
+                Message::None
+            }
+        }
+
         container(
             container(column![
                 row![
@@ -2366,7 +2394,7 @@ impl App {
                                     self.theme().palette()
                                 )),
                             )
-                            .map(|_| Message::None),
+                            .map(handle_url),
                         )
                         .padding(8)
                         .style(container::dark)

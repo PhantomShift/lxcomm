@@ -1,8 +1,12 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::LazyLock};
 
 use bstr::ByteSlice;
 use iced::widget::markdown::{self, Item};
 use itertools::Itertools;
+
+// Very rudimentary URL detection regex
+static NAIVE_URL_REGEX: LazyLock<fancy_regex::Regex> =
+    LazyLock::new(|| fancy_regex::Regex::new("(https?://[^\\s,]+)").expect("regex should compile"));
 
 // Probably(?) important todo: make this not unbounded
 #[derive(Debug, Default)]
@@ -188,6 +192,14 @@ pub fn to_markdown<S: AsRef<str>>(subject: S) -> String {
             return front + &inner + &back;
         }
     }
+
+    let subject = NAIVE_URL_REGEX.replace_all(subject, |cap: &fancy_regex::Captures<'_>| {
+        let link = cap
+            .get(0)
+            .expect("pattern should have a singular capture group")
+            .as_str();
+        format!("[{link}]({link})")
+    });
 
     // Just naively convert by substition
     subject

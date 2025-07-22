@@ -41,6 +41,7 @@ tokio-util = { version = "0.7.15", features = ["rt"] }
 walkdir = "2.5.0"
 which = "8.0.0"
 notify-rust = "4.11.7"
+fancy-regex = "*"
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 single-instance = "0.3.3"

@@ -3091,6 +3091,7 @@ dependencies = [
  "dircpy",
  "etcetera",
  "eyre",
+ "fancy-regex",
  "fuse-rust",
  "humantime",
  "iced",
