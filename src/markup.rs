@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use bstr::ByteSlice;
 use iced::widget::markdown::{self, Item};
+use itertools::Itertools;
 
 // Probably(?) important todo: make this not unbounded
 #[derive(Debug, Default)]
@@ -101,6 +102,17 @@ pub fn to_markdown<S: AsRef<str>>(subject: S) -> String {
         return front + &formatted + &back;
     }
 
+    if let Some((l, r)) = find_pair(subject, "[quote]", "[/quote]") {
+        let front = to_markdown(&subject[..l]);
+        let quote = subject[l + "[quote]".len()..r]
+            .lines()
+            .map(|line| format!("> {}", to_markdown(line)))
+            .join("\n");
+        let back = to_markdown(&subject[r + "[/quote]".len()..]);
+
+        return front + &quote + &back;
+    }
+
     if let Some((l, i, r)) = match_pair(subject, "[quote+]", "[/quote]") {
         let front = to_markdown(&subject[..l]);
         let author = if i - l > "[quote]".len() {
@@ -108,11 +120,11 @@ pub fn to_markdown<S: AsRef<str>>(subject: S) -> String {
         } else {
             "Unknown"
         };
-        let author_line = format!("\n> *Originally posted by **{author}**");
+        let author_line = format!("> *Originally posted by **{author}**\n");
         let quote = subject[i..r]
             .lines()
-            .map(|line| format!("\n> {}\n", to_markdown(line)))
-            .collect::<String>();
+            .map(|line| format!("> {}", to_markdown(line)))
+            .join("\n");
         let back = to_markdown(&subject[r + "[/quote]".len()..]);
 
         return front + &author_line + &quote + &back;
