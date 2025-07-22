@@ -66,6 +66,11 @@ pub fn build_active_config<D: AsRef<Path>>(
                         files::link_files(&file_path, item_config.join(name))?;
                     }
                 }
+                // TODO - Allow files in subdirectories to be edited as well
+                else if file.file_type()?.is_dir() {
+                    let path = file.path().canonicalize()?;
+                    files::link_dirs(path, item_config.join(file.file_name()))?;
+                }
             }
         }
     }
