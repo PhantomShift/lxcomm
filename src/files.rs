@@ -1,6 +1,6 @@
 use std::{
     fmt::Display,
-    io::{Read, Seek},
+    io::{BufReader, Read, Seek},
     path::{Path, PathBuf},
     sync::{Arc, LazyLock},
 };
@@ -334,10 +334,11 @@ pub fn monitor_file_changes(path: PathBuf) -> (Task<MonitorFileChange>, iced::ta
                             let path = path.clone();
                             let (read, contents) =
                                 tokio::task::spawn_blocking(move || -> eyre::Result<_> {
-                                    let mut file = std::fs::File::open(path)?;
+                                    let file = std::fs::File::open(path)?;
                                     let mut buffer = Vec::new();
-                                    file.seek(std::io::SeekFrom::Start(position as u64))?;
-                                    let read = file.read_to_end(&mut buffer)?;
+                                    let mut buf_reader = BufReader::new(file);
+                                    buf_reader.seek(std::io::SeekFrom::Start(position as u64))?;
+                                    let read = buf_reader.read_to_end(&mut buffer)?;
                                     Ok((read, buffer.to_str_lossy().to_string()))
                                 })
                                 .await

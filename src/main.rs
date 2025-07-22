@@ -717,14 +717,10 @@ impl App {
             }
         };
         let auto_login = Task::done(Message::SteamCMDLogin(false));
-        let monitor_launch_log = app.setup_launch_log_monitor();
 
         app.scan_downloads();
 
-        Ok((
-            app,
-            Task::batch([auto_grab_api_key, auto_login, monitor_launch_log]),
-        ))
+        Ok((app, Task::batch([auto_grab_api_key, auto_login])))
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -1731,6 +1727,7 @@ impl App {
                             Message::SetBusy(false)
                         }
                     }))
+                    .chain(self.setup_launch_log_monitor())
                 } else {
                     Task::done(Message::DisplayError(
                         "Missing Command".to_string(),
