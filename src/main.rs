@@ -111,6 +111,14 @@ static PROFILES_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
 static ACTIVE_CONFIG_DIR: LazyLock<PathBuf> = LazyLock::new(|| DATA_DIR.join("active_config"));
 static ACTIVE_MODS_DIR: LazyLock<PathBuf> = LazyLock::new(|| DATA_DIR.join("active_mods"));
 
+#[cfg(target_os = "linux")]
+static NOTIF_CACHE: LazyLock<moka::sync::Cache<u32, u32>> = LazyLock::new(|| {
+    moka::sync::Cache::builder()
+        .time_to_idle(Duration::from_secs(10))
+        .max_capacity(16)
+        .build()
+});
+
 #[derive(Debug, Default, Clone)]
 pub enum SettingsMessage {
     Edit(AppSettingEdit),
@@ -529,6 +537,9 @@ although this will also retry if any other errors occur. Set this to a higher va
     #[reflect(@AppSettingsDescription("If enabled, plays a sound when the download notification is sent."))]
     notify_with_sound: bool,
 
+    #[reflect(@AppSettingsLabel("Show Download Progress Notification"))]
+    notify_progress: bool,
+
     #[reflect(@AppSettingsLabel("Workshop Update Item Id"))]
     #[reflect(@AppSettingsDescription(r#"Due to strange steamcmd behavior which does not appear to be addressed anywhere,
 at least one workshop item must be (successfully) downloaded before the "+workshop_status" command works.
@@ -573,6 +584,7 @@ impl Default for AppSettings {
             check_updates_on_startup: true,
             notify_on_download_complete: true,
             notify_with_sound: false,
+            notify_progress: false,
             workshop_update_item_id: X2_WOTCCOMMUNITY_HIGHLANDER_ID,
             reload_profile_on_launch: true,
 
@@ -1137,6 +1149,22 @@ impl App {
                 self.library.items.remove(&id);
             }
             Message::DownloadCancelRequested(id) => {
+                #[cfg(target_os = "linux")]
+                if self.settings.notify_progress
+                    && let Some(notif_id) = NOTIF_CACHE.remove(&id)
+                    && let Some(details) = self.file_cache.get_details(id)
+                {
+                    let mut notif = notify_rust::Notification::new();
+                    let title = &details.title;
+                    notif
+                        .appname("LXCOMM")
+                        .summary(&format!("{title} Not Downloaded"))
+                        .body("Download was cancelled")
+                        .timeout(-1)
+                        .id(notif_id);
+                    let _ = notif.show();
+                }
+
                 if let Some(_progress) = self.ongoing_downloads.remove(&id) {
                     if let Some(handle) = self.cancel_download_handles.remove(&id) {
                         handle.abort();
@@ -1170,6 +1198,22 @@ impl App {
                 self.ongoing_downloads.remove(&id);
                 self.completed_downloads.insert(id);
                 self.scan_downloads();
+
+                #[cfg(target_os = "linux")]
+                if self.settings.notify_progress
+                    && let Some(notif_id) = NOTIF_CACHE.remove(&id)
+                    && let Some(details) = self.file_cache.get_details(id)
+                {
+                    let mut notif = notify_rust::Notification::new();
+                    let title = &details.title;
+                    notif
+                        .appname("LXCOMM")
+                        .summary(&format!("Downloaded {title}"))
+                        .body("Downloaded Completed")
+                        .timeout(-1)
+                        .id(notif_id);
+                    let _ = notif.show();
+                }
 
                 if self.ongoing_downloads.is_empty() && self.download_queue.is_empty() {
                     if self.settings.notify_on_download_complete {
@@ -1211,6 +1255,22 @@ impl App {
                 return self.queue_downloads();
             }
             Message::SteamCMDDownloadErrored(id, message) => {
+                #[cfg(target_os = "linux")]
+                if self.settings.notify_progress
+                    && let Some(notif_id) = NOTIF_CACHE.remove(&id)
+                    && let Some(details) = self.file_cache.get_details(id)
+                {
+                    let mut notif = notify_rust::Notification::new();
+                    let title = &details.title;
+                    notif
+                        .appname("LXCOMM")
+                        .summary(&format!("Error Downloading {title}"))
+                        .body(&message)
+                        .timeout(-1)
+                        .id(notif_id);
+                    let _ = notif.show();
+                }
+
                 self.ongoing_downloads.remove(&id);
                 self.errorred_downloads.insert(id, message);
 
@@ -1218,6 +1278,42 @@ impl App {
             }
             Message::SteamCMDDownloadProgress(id, size) => {
                 self.ongoing_downloads.entry(id).and_modify(|e| *e = size);
+
+                #[cfg(target_os = "linux")]
+                if self.settings.notify_progress
+                    && let Some(info) = self.file_cache.get_details(id)
+                    && let Ok(total_size) = info.file_size.parse::<u64>()
+                {
+                    let title = info.title.clone();
+                    let progress = std::cmp::min(size * 100 / total_size, 0);
+                    return Task::future(async move {
+                        let mut notif = notify_rust::Notification::new();
+                        notif
+                            .appname("LXCOMM")
+                            .summary(&format!("Downloading {title}"))
+                            .body(&format!(
+                                "{} of {} Downloaded",
+                                files::SizeDisplay::automatic_from(size, total_size),
+                                files::SizeDisplay::automatic(total_size)
+                            ))
+                            .timeout(0)
+                            .hint(notify_rust::Hint::Resident(true))
+                            .hint(notify_rust::Hint::CustomInt(
+                                "value".to_string(),
+                                progress as i32,
+                            ));
+
+                        if let Some(notif_id) = NOTIF_CACHE.get(&id) {
+                            notif.id(notif_id);
+                        }
+
+                        if let Ok(handle) = notif.show_async().await {
+                            NOTIF_CACHE.insert(id, handle.id());
+                        }
+
+                        Message::None
+                    });
+                }
             }
             Message::SteamCMDDownloadCompletedClear(ids) => {
                 for id in ids {
