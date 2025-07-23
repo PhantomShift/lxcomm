@@ -1970,7 +1970,8 @@ impl App {
             }
             Message::CloseAppRequested => {
                 if self.settings.steamcmd_save_password {
-                    if let Err(err) = self
+                    if !self.steamcmd_state.password.expose_secret().is_empty()
+                        && let Err(err) = self
                         .credentials
                         .steam_password
                         .set_password(self.steamcmd_state.password.expose_secret())
@@ -1982,7 +1983,8 @@ impl App {
                 }
 
                 if self.settings.steam_webapi_save_api_key {
-                    if let Err(err) = self
+                    if !self.api_key.expose_secret().is_empty()
+                        && let Err(err) = self
                         .credentials
                         .steam_web_api
                         .set_password(self.api_key.expose_secret())
