@@ -2431,18 +2431,14 @@ impl App {
             panic!("async_dialog_modal should only be passed an async dialog")
         };
 
-        iced_aw::card(
-            text(title),
-            column![
-                text(body),
-                row(options.iter().enumerate().map(|(i, display)| {
+        iced_aw::card(text(title).width(Fill), column![scrollable(text(body)),])
+            .foot(row(options.iter().enumerate().map(|(i, display)| {
                     button(text(display))
                         .on_press(Message::AsyncDialogResolve(*key, i))
                         .into()
-                }))
-            ],
-        )
-        .width(Shrink)
+            })))
+            .max_height(500.0)
+            .width(Fill)
         .into()
     }
 
