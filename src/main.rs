@@ -37,8 +37,8 @@ use iced::{
     stream,
     widget::{
         self, Stack, button, checkbox, column, combo_box, container, horizontal_space, image,
-        markdown, opaque, pick_list, progress_bar, rich_text, row, scrollable, span, stack, text,
-        text_editor, text_input, toggler, tooltip, vertical_rule, vertical_space,
+        markdown, opaque, progress_bar, rich_text, row, scrollable, span, stack, text, text_editor,
+        text_input, toggler, tooltip, vertical_rule, vertical_space,
     },
 };
 use iced_aw::{card, widget::LabeledFrame};
@@ -47,12 +47,18 @@ use ringmap::RingMap;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use steam_rs::{self, Steam, published_file_service::query_files::PublishedFiles};
-use strum::{Display, EnumIter, IntoEnumIterator, VariantArray};
+use strum::{Display, EnumIter, IntoEnumIterator};
 
-use crate::mod_edit::EditorMessage;
-use crate::platform::symbols;
+use crate::{
+    browser::WorkshopBrowser,
+    collections::{CollectionsMessage, CollectionsState},
+    platform::symbols,
+};
+use crate::{collections::CollectionSource, mod_edit::EditorMessage};
 use crate::{extensions::DetailsExtension, web::resolve_all_dependencies};
 
+pub mod browser;
+pub mod collections;
 pub mod extensions;
 pub mod files;
 pub mod library;
@@ -110,6 +116,12 @@ static PROFILES_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
 
 static ACTIVE_CONFIG_DIR: LazyLock<PathBuf> = LazyLock::new(|| DATA_DIR.join("active_config"));
 static ACTIVE_MODS_DIR: LazyLock<PathBuf> = LazyLock::new(|| DATA_DIR.join("active_mods"));
+
+static LOCAL_COLLECTIONS_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
+    let collections = DATA_DIR.join("collections");
+    std::fs::create_dir_all(&collections).expect("data directory should be writable");
+    collections
+});
 
 #[cfg(target_os = "linux")]
 static NOTIF_CACHE: LazyLock<moka::sync::Cache<u32, u32>> = LazyLock::new(|| {
@@ -182,6 +194,7 @@ pub enum Message {
     DownloadAllRequested(u32),
     DownloadAllConfirmed(Arc<BTreeSet<u32>>),
 
+    Collections(CollectionsMessage),
     Settings(SettingsMessage),
     ModEditor(EditorMessage),
 
@@ -293,6 +306,7 @@ pub enum AppPage {
     Downloads,
     #[strum(to_string = "Game Logs")]
     GameLogs,
+    Collections,
 }
 
 #[derive(Debug, Derivative, Clone)]
@@ -304,6 +318,7 @@ pub enum AppModal {
     SteamGuardCodeRequest,
     ProfileAddRequest,
     ItemDetailedView(u32),
+    CollectionDetailedView(CollectionSource),
     Busy,
     BusyMessage(String),
     ErrorMessage(String, String),
@@ -349,6 +364,7 @@ impl AppModal {
             SteamGuardCodeRequest => false,
             ProfileAddRequest => true,
             ItemDetailedView(_) => true,
+            CollectionDetailedView(_) => true,
             Busy => false,
             BusyMessage(_) => false,
             ErrorMessage(_, _) => true,
@@ -405,11 +421,11 @@ pub struct App {
     api_key: SecretString,
     current_page: AppPage,
     modal_stack: Vec<AppModal>,
+    browsing_scroll_id: iced::widget::scrollable::Id,
     browsing_page: u32,
     browsing_page_max: u32,
     browsing_query: web::WorkshopQuery,
     browsing_query_period: web::WorkshopTrendPeriod,
-    browse_query_edit: String,
     browse_query_tags_open: bool,
     loaded_files: Vec<steam_rs::published_file_service::query_files::File>,
     steamcmd_state: Arc<steamcmd::State>,
@@ -438,6 +454,7 @@ pub struct App {
     active_profile_combo: combo_box::State<String>,
     abortable_handles: HashMap<AppAbortKey, iced::task::Handle>,
     launch_log: iced::widget::text_editor::Content,
+    collections: CollectionsState,
 }
 
 #[derive(Debug, Reflect, Clone, Copy)]
@@ -671,11 +688,11 @@ impl App {
             api_key: SecretString::default(),
             current_page: Default::default(),
             modal_stack: Vec::new(),
+            browsing_scroll_id: iced::widget::scrollable::Id::unique(),
             browsing_page: 0,
             browsing_page_max: 0,
             browsing_query: web::WorkshopQuery::default(),
             browsing_query_period: web::WorkshopTrendPeriod::default(),
-            browse_query_edit: String::new(),
             browse_query_tags_open: false,
             loaded_files: vec![],
             steamcmd_state,
@@ -706,6 +723,7 @@ impl App {
             active_profile_combo,
             abortable_handles: HashMap::new(),
             launch_log: Default::default(),
+            collections: CollectionsState::default(),
         };
 
         let auto_grab_api_key = match app.credentials.steam_web_api.get_password() {
@@ -737,6 +755,8 @@ impl App {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            // TODO - Figure out a good way to decouple this
+            Message::Collections(message) => return self.update_collections(message),
             Message::Settings(message) => return self.update_settings(message),
             Message::ModEditor(message) => {
                 if let Some(task) = self.mod_editor.update(message) {
@@ -807,7 +827,7 @@ impl App {
                             eprintln!("Error writing file details to cache: {err:?}");
                         }
 
-                        tasks.push(self.cache_item_image(details));
+                        tasks.push(self.cache_item_image(&details.preview_url));
                     }
                     return Task::batch(tasks);
                 }
@@ -834,7 +854,7 @@ impl App {
                         eprintln!("Error writing file details to cache: {err:?}");
                     }
 
-                    tasks.push(self.cache_item_image(details));
+                    tasks.push(self.cache_item_image(&details.preview_url));
                 }
                 return Task::batch(tasks);
             }
@@ -919,10 +939,10 @@ impl App {
                                 },
                                 |()| Message::None,
                             ),
-                            self.cache_item_image(info.as_ref()),
+                            self.cache_item_image(&info.preview_url),
                         ]);
                     } else {
-                        return self.cache_item_image(info.as_ref());
+                        return self.cache_item_image(&info.preview_url);
                     }
                 } else if let Some(mut sender) = self.background_resolver_sender.clone() {
                     return Task::future(async move {
@@ -938,7 +958,7 @@ impl App {
                     });
                 }
             }
-            Message::BrowseEditQuery(query) => self.browse_query_edit = query,
+            Message::BrowseEditQuery(query) => self.browsing_query.query = query,
             Message::BrowseEditSort(sort) => self.browsing_query.sort = sort,
             Message::BrowseEditTag(tag) => {
                 if self.browsing_query.tags.contains(&tag) {
@@ -955,7 +975,6 @@ impl App {
             }
             Message::BrowseToggleTagsDropdown(toggled) => self.browse_query_tags_open = toggled,
             Message::BrowseSubmitQuery => {
-                self.browsing_query.query = self.browse_query_edit.clone();
                 self.browsing_page = 1;
 
                 return Task::done(Message::BrowseUpdateQuery);
@@ -965,6 +984,7 @@ impl App {
                 let query = self.browsing_query.clone();
                 let cache_lifetime = self.settings.steam_webapi_cache_lifetime;
                 let api_key = self.api_key.clone();
+                let scroll_task = reset_scroll!(self.browsing_scroll_id.clone());
                 return Task::done(Message::SetBusy(true))
                     .chain(Task::future(async move {
                         match web::query_mods(
@@ -988,6 +1008,7 @@ impl App {
                             }
                         }
                     }))
+                    .chain(scroll_task)
                     .chain(Task::done(Message::SetBusy(false)));
             }
 
@@ -1585,7 +1606,7 @@ impl App {
                     for id in profile.items.keys() {
                         if let Some(details) = self.file_cache.get_details(*id) {
                             self.markup_cache.cache_markup(details.get_description());
-                            tasks.push(self.cache_item_image(&details));
+                            tasks.push(self.cache_item_image(&details.preview_url));
                         }
                     }
 
@@ -1972,9 +1993,9 @@ impl App {
                 if self.settings.steamcmd_save_password {
                     if !self.steamcmd_state.password.expose_secret().is_empty()
                         && let Err(err) = self
-                        .credentials
-                        .steam_password
-                        .set_password(self.steamcmd_state.password.expose_secret())
+                            .credentials
+                            .steam_password
+                            .set_password(self.steamcmd_state.password.expose_secret())
                     {
                         eprintln!("Error saving password entry: {err:?}");
                     }
@@ -1985,9 +2006,9 @@ impl App {
                 if self.settings.steam_webapi_save_api_key {
                     if !self.api_key.expose_secret().is_empty()
                         && let Err(err) = self
-                        .credentials
-                        .steam_web_api
-                        .set_password(self.api_key.expose_secret())
+                            .credentials
+                            .steam_web_api
+                            .set_password(self.api_key.expose_secret())
                     {
                         eprintln!("Error saving web api key entry: {err:?}");
                     }
@@ -2269,18 +2290,21 @@ impl App {
 
     fn view_item_detailed(&self, id: u32) -> Element<'_, Message> {
         let Some(file) = self.file_cache.get_details(id) else {
-            return column![
-                text("Failed to load details"),
-                vertical_space(),
-                row![
-                    horizontal_space(),
-                    button("Close")
-                        .style(button::danger)
-                        .on_press(Message::CloseModal)
-                ],
-            ]
-            .height(Fill)
-            .width(Fill)
+            return container(
+                column![
+                    text("Failed to load details"),
+                    vertical_space(),
+                    row![
+                        horizontal_space(),
+                        button("Close")
+                            .style(button::danger)
+                            .on_press(Message::CloseModal)
+                    ],
+                ]
+                .height(Fill)
+                .width(Fill),
+            )
+            .style(container::rounded_box)
             .into();
         };
 
@@ -2294,34 +2318,6 @@ impl App {
                 .not()
                 .then_some(Message::SteamCMDDownloadRequested(id)),
         );
-
-        fn handle_url(url: reqwest::Url) -> Message {
-            if url.domain() == Some("steamcommunity.com")
-                && url
-                    .path_segments()
-                    .is_some_and(|mut split| split.nth_back(1) == Some("filedetails"))
-                && let Some(id) = url
-                    .query_pairs()
-                    .find_map(|(name, value)| name.eq("id").then(|| value.parse::<u32>().ok()))
-                    .flatten()
-            {
-                Message::SetViewingItem(id)
-            } else {
-                std::thread::spawn(move || {
-                    if let rfd::MessageDialogResult::Yes = rfd::MessageDialog::new()
-                        .set_title("Warning: External Link")
-                        .set_description(format!(
-                            "This link leads to:\n\n{url}\n\n are you sure you want to go there?"
-                        ))
-                        .set_buttons(rfd::MessageButtons::YesNo)
-                        .show()
-                    {
-                        let _ = opener::open(url.as_str());
-                    }
-                });
-                Message::None
-            }
-        }
 
         container(
             container(column![
@@ -2396,8 +2392,9 @@ impl App {
                                     self.theme().palette()
                                 )),
                             )
-                            .map(handle_url),
+                            .map(web::handle_url),
                         )
+                        .width(Fill)
                         .padding(8)
                         .style(container::dark)
                     )
@@ -2573,11 +2570,12 @@ impl App {
                     AppPage::Main => self.main_page(),
                     AppPage::Library => self.library_page(),
                     AppPage::Profiles => self.profiles_page(),
-                    AppPage::Browse => self.browse_page(),
+                    AppPage::Browse => self.render_browser(self, self.loaded_files.iter()),
                     AppPage::SteamCMD => self.steamcmd_page(),
                     AppPage::Settings => self.settings_page(),
                     AppPage::Downloads => self.downloads_page(),
                     AppPage::GameLogs => self.game_logs_page(),
+                    AppPage::Collections => self.collections.render_browser(self, self.collections.loaded_web_collections.iter()),
                 }
             ],
             {
@@ -2592,6 +2590,7 @@ impl App {
                         AppModal::ProfileAddRequest => self.profile_add_modal(),
                         AppModal::AddToProfileRequest(ids) => self.add_to_profile_modal(ids),
                         AppModal::ItemDetailedView(id) => self.view_item_detailed(*id),
+                        AppModal::CollectionDetailedView(source) => self.collections.view_collection_detailed(self, source),
                         dialog @ AppModal::AsyncDialog {
                             strategy: AsyncDialogStrategy::Stack | AsyncDialogStrategy::Replace,
                             ..
@@ -2861,133 +2860,6 @@ impl App {
             .height(Fill)
             .width(Fill)
             .into()
-    }
-
-    fn browse_page(&self) -> Element<'_, Message> {
-        let items = row(self.loaded_files.iter().map(|file| {
-            let id = &file
-                .published_file_id
-                .parse::<u32>()
-                .expect("id should be a valid u32");
-            container(
-                column![
-                    web::image_maybe(&self.images, &file.preview_url)
-                        .width(Fill)
-                        .height(300),
-                    text(&file.title),
-                    text(&file.published_file_id),
-                    text!("{:.2} out of 10", file.get_score() * 10.0),
-                    button(text("View").align_x(Center))
-                        .width(Fill)
-                        .on_press(Message::SetViewingItem(*id)),
-                    button(
-                        text(if self.item_downloaded(*id) {
-                            "Update"
-                        } else {
-                            "Download"
-                        })
-                        .align_x(Center)
-                    )
-                    .width(Fill)
-                    .on_press_maybe(
-                        self.is_downloading(*id)
-                            .not()
-                            .then_some(Message::SteamCMDDownloadRequested(*id))
-                    ),
-                    text({
-                        file.get_description()
-                            .char_indices()
-                            .take(64)
-                            .map(|(_, ch)| ch)
-                            .collect::<String>()
-                    }),
-                ]
-                .spacing(4)
-                .height(Shrink)
-                .width(Fill),
-            )
-            .style(container::secondary)
-            .padding(16)
-            .max_width(300)
-            .into()
-        }))
-        .spacing(16)
-        .padding(16)
-        .height(Shrink)
-        .wrap();
-
-        column![
-            row![
-                text("API Key"),
-                text_input("API Key...", self.api_key.expose_secret())
-                    .on_input(Message::SetApiKey)
-                    .secure(true)
-            ],
-            row![
-                text("Search"),
-                text_input("Query...", &self.browse_query_edit)
-                    .on_input(Message::BrowseEditQuery)
-                    .on_submit(Message::BrowseSubmitQuery)
-            ],
-            row![pick_list(
-                web::WorkshopSort::all_with_period(self.browsing_query_period),
-                Some(self.browsing_query.sort),
-                Message::BrowseEditSort
-            )]
-            .push(match self.browsing_query.sort {
-                web::WorkshopSort::Trend(period) => {
-                    Some(pick_list(
-                        web::WorkshopTrendPeriod::VARIANTS,
-                        Some(period),
-                        Message::BrowseEditPeriod,
-                    ))
-                }
-                _ => None,
-            })
-            .push(
-                iced_aw::DropDown::new(
-                    button("Tags").width(256).style(button::secondary).on_press(
-                        Message::BrowseToggleTagsDropdown(!self.browse_query_tags_open)
-                    ),
-                    container(column(web::XCOM2WorkshopTag::VARIANTS.iter().map(|tag| {
-                        row![
-                            text(tag.to_string()),
-                            horizontal_space(),
-                            toggler(self.browsing_query.tags.contains(tag))
-                                .on_toggle(|_| Message::BrowseEditTag(*tag))
-                        ]
-                        .into()
-                    })),)
-                    .style(container::dark)
-                    .padding(8),
-                    self.browse_query_tags_open,
-                )
-                .on_dismiss(Message::BrowseToggleTagsDropdown(false))
-            ),
-            scrollable(column!(items))
-                .height(iced::Length::Fill)
-                .anchor_top(),
-            row![
-                button("<").on_press_maybe(
-                    (self.browsing_page_max > 0 && self.browsing_page > 1)
-                        .then(|| Message::SetBrowsePage(self.browsing_page - 1))
-                ),
-                horizontal_space(),
-                container(if self.browsing_page_max > 0 {
-                    text!("Page: {} of {}", self.browsing_page, self.browsing_page_max)
-                } else {
-                    text!("Nothing to see...")
-                })
-                .padding(4),
-                horizontal_space(),
-                button(">").on_press_maybe(
-                    (self.browsing_page_max > 0 && self.browsing_page < self.browsing_page_max)
-                        .then(|| Message::SetBrowsePage(self.browsing_page + 1))
-                ),
-            ]
-            .height(32)
-        ]
-        .into()
     }
 
     fn steamcmd_page(&self) -> Element<'_, Message> {
@@ -3561,12 +3433,13 @@ impl App {
         .is_some_and(|exists| exists)
     }
 
-    fn cache_item_image(
-        &self,
-        info: &steam_rs::published_file_service::query_files::File,
-    ) -> Task<Message> {
-        if !self.images.contains_key(&info.preview_url) {
-            let url = info.preview_url.clone();
+    fn cache_item_image<S: AsRef<str>>(&self, url: S) -> Task<Message> {
+        if url.as_ref().is_empty() {
+            return Task::none();
+        }
+
+        if !self.images.contains_key(url.as_ref()) {
+            let url = url.as_ref().to_string();
             Task::future(async move {
                 match web::load_image(&url).await {
                     Ok(path) => {

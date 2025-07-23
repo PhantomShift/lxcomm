@@ -8,6 +8,7 @@ use std::{
 
 use crate::{
     CACHE_DIR, Message, XCOM_APPID,
+    collections::{Collection, CollectionSource, ImageSource},
     extensions::{SplitAtBoundary, URLArrayListable},
     files,
 };
@@ -20,6 +21,7 @@ use iced::{
 use steam_rs::{
     Steam,
     published_file_service::{
+        self,
         get_details::FileDetailResult,
         query_files::{PublishedFileQueryType, PublishedFiles},
     },
@@ -82,6 +84,17 @@ pub fn image_maybe<'a, S: AsRef<str>>(
     }
 }
 
+pub fn image_from_source<'a>(
+    state: &'a HashMap<String, image::Handle>,
+    source: ImageSource,
+) -> Container<'a, Message> {
+    match source {
+        ImageSource::Path(path) => container(image(path)),
+        ImageSource::Web(url) if !url.is_empty() => image_maybe(state, url),
+        ImageSource::Web(_) => container("NO IMAGE AVAILABLE").center(Fill),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ResolverMessage {
     Setup(iced::futures::channel::mpsc::Sender<Message>),
@@ -128,7 +141,8 @@ pub fn setup_background_resolver() -> impl Stream<Item = Message> {
             if !unresolved.is_empty()
                 && let Some(current_client) = &client
             {
-                match get_mod_details(current_client.clone(), &unresolved).await {
+                let range = ..50.min(unresolved.len());
+                match get_mod_details(current_client.clone(), &unresolved[range]).await {
                     Ok(files) => {
                         if let Err(err) = output
                             .send(Message::BackgroundResolverMessage(
@@ -138,7 +152,7 @@ pub fn setup_background_resolver() -> impl Stream<Item = Message> {
                         {
                             eprintln!("Error sending grabbed file details: {err:?}");
                         } else {
-                            unresolved.clear();
+                            unresolved.drain(range);
                         }
                     }
                     Err(err) => {
@@ -360,9 +374,17 @@ impl WorkshopSort {
             Self::TextSearch,
         ]
     }
+
+    pub fn period_or_default(&self) -> WorkshopTrendPeriod {
+        if let WorkshopSort::Trend(period) = self {
+            period.to_owned()
+        } else {
+            Default::default()
+        }
+    }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkshopQuery {
     pub query: String,
     pub sort: WorkshopSort,
@@ -448,7 +470,7 @@ pub async fn query_mods(
             page,
             "",
             Some(QUERY_PAGE_SIZE),
-            XCOM_APPID,
+            0,
             XCOM_APPID,
             &format!("&{}", query.tags.clone().into_url_array("requiredtags")),
             "",
@@ -489,6 +511,110 @@ pub async fn query_mods(
     Ok((query, false))
 }
 
+// Only doing per-session caching for collections since
+// I expect that it's less likely to be extensively browsed
+static COLLECTION_QUERY_CACHE: LazyLock<
+    moka::sync::Cache<(u32, WorkshopQuery), CollectionQueryResponse>,
+> = LazyLock::new(|| {
+    moka::sync::Cache::builder()
+        .time_to_idle(std::time::Duration::from_secs(3600))
+        .max_capacity(128)
+        .build()
+});
+
+#[derive(Debug, Clone)]
+pub struct CollectionQueryResponse {
+    pub total: u64,
+    pub collections: Arc<[Collection]>,
+}
+
+pub async fn query_collections(
+    client: Steam,
+    page: u32,
+    query: WorkshopQuery,
+) -> Result<CollectionQueryResponse> {
+    if let Some(collections) = COLLECTION_QUERY_CACHE.get(&(page, query.clone())) {
+        return Ok(collections);
+    }
+
+    let response = client
+        .query_files(
+            query.sort.as_query_type(),
+            page,
+            "",
+            Some(QUERY_PAGE_SIZE),
+            0,
+            XCOM_APPID,
+            &format!("&{}", query.tags.iter().into_url_array("requiredtags")),
+            "",
+            Some(!query.tags.is_empty()),
+            "",
+            "",
+            &query.query,
+            steam_rs::published_file_service::query_files::PublishedFileInfoMatchingFileType::Collections,
+            0,
+            match &query.sort {
+                WorkshopSort::Trend(period) => period.as_days(),
+                _ => 0,
+            },
+            false,
+            Some(DEFAULT_CACHE_TIME),
+            None,
+            "",
+            false,
+            false,
+            true,
+            true,
+            true,
+            true,
+            true,
+            false,
+            false,
+            Some(true),
+            1,
+        )
+        .await?;
+
+    let total = response.total;
+
+    let collections = response
+        .published_file_details
+        .into_iter()
+        .filter_map(|file| {
+            let id = file.published_file_id.parse::<u32>().ok()?;
+            let published_file_service::query_files::File {
+                title,
+                children,
+                preview_url,
+                file_description,
+                previews,
+                ..
+            } = file;
+            let banner_url = previews
+                .iter()
+                .find_map(|prev| prev.preview_type.eq(&0).then(|| prev.url.clone()))
+                .flatten();
+            Some(Collection {
+                source: CollectionSource::Workshop(id),
+                title,
+                items: children
+                    .iter()
+                    .flat_map(|child| child.published_file_id.parse::<u32>())
+                    .collect(),
+                image: ImageSource::Web(preview_url),
+                banner: banner_url.map(ImageSource::Web),
+                description: file_description.unwrap_or_default(),
+            })
+        })
+        .collect::<Arc<[_]>>();
+
+    let response = CollectionQueryResponse { total, collections };
+
+    COLLECTION_QUERY_CACHE.insert((page, query.clone()), response.clone());
+
+    Ok(response)
+}
+
 /// note - no cache check is done as mods are assumed to be
 /// unknown if this is called, otherwise it is cached somewhere on the filesystem.
 pub async fn get_mod_details<U: Copy + Into<u64>>(
@@ -525,4 +651,32 @@ pub async fn get_mod_details<U: Copy + Into<u64>>(
             FileDetailResult::Invalid(_) => None,
         })
         .collect())
+}
+
+pub fn handle_url(url: reqwest::Url) -> Message {
+    if url.domain() == Some("steamcommunity.com")
+        && url
+            .path_segments()
+            .is_some_and(|mut split| split.nth_back(1) == Some("filedetails"))
+        && let Some(id) = url
+            .query_pairs()
+            .find_map(|(name, value)| name.eq("id").then(|| value.parse::<u32>().ok()))
+            .flatten()
+    {
+        Message::SetViewingItem(id)
+    } else {
+        std::thread::spawn(move || {
+            if let rfd::MessageDialogResult::Yes = rfd::MessageDialog::new()
+                .set_title("Warning: External Link")
+                .set_description(format!(
+                    "This link leads to:\n\n{url}\n\n are you sure you want to go there?"
+                ))
+                .set_buttons(rfd::MessageButtons::YesNo)
+                .show()
+            {
+                let _ = opener::open(url.as_str());
+            }
+        });
+        Message::None
+    }
 }
