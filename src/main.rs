@@ -1448,7 +1448,11 @@ impl App {
                     profile.add_selected = false;
                 }
                 self.modal_stack.push(AppModal::AddToProfileRequest(
-                    self.library.items.keys().copied().collect(),
+                    self.library
+                        .items
+                        .iter()
+                        .filter_map(|(id, item)| item.selected.then_some(*id))
+                        .collect(),
                 ));
             }
             Message::LibraryAddToProfileToggleAll(toggled) => {
