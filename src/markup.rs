@@ -108,9 +108,9 @@ pub fn to_markdown<S: AsRef<str>>(subject: S) -> String {
 
     if let Some((l, r)) = find_pair(subject, "[quote]", "[/quote]") {
         let front = to_markdown(&subject[..l]);
-        let quote = subject[l + "[quote]".len()..r]
+        let quote = to_markdown(&subject[l + "[quote]".len()..r])
             .lines()
-            .map(|line| format!("> {}", to_markdown(line)))
+            .map(|line| format!("> {line}"))
             .join("\n");
         let back = to_markdown(&subject[r + "[/quote]".len()..]);
 
@@ -124,10 +124,10 @@ pub fn to_markdown<S: AsRef<str>>(subject: S) -> String {
         } else {
             "Unknown"
         };
-        let author_line = format!("> *Originally posted by **{author}**\n");
-        let quote = subject[i..r]
+        let author_line = format!("> *Originally posted by **{author}***\n");
+        let quote = to_markdown(&subject[i..r])
             .lines()
-            .map(|line| format!("> {}", to_markdown(line)))
+            .map(|line| format!("> {line}"))
             .join("\n");
         let back = to_markdown(&subject[r + "[/quote]".len()..]);
 
