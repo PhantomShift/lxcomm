@@ -51,8 +51,9 @@ use strum::{Display, EnumIter, IntoEnumIterator};
 
 use crate::{
     browser::WorkshopBrowser,
-    collections::{CollectionsMessage, CollectionsState},
+    collections::{Collection, CollectionsMessage, CollectionsState},
     platform::symbols,
+    widgets::{AsyncDialog, AsyncDialogField},
 };
 use crate::{collections::CollectionSource, mod_edit::EditorMessage};
 use crate::{extensions::DetailsExtension, web::resolve_all_dependencies};
@@ -153,8 +154,10 @@ pub enum Message {
 
     QueryFilesLoaded(PublishedFiles),
 
-    AsyncDialogResolve(AsyncDialogKey, usize),
-    AsyncDialogCancelled(AsyncDialogKey),
+    AsyncChooseResolve(AsyncDialogKey, usize),
+    AsyncChooseCancelled(AsyncDialogKey),
+    AsyncDialogUpdate(AsyncDialogKey, String, AsyncDialogField),
+    AsyncDialogResolved(AsyncDialogKey, bool),
     AbortTask(AppAbortKey),
 
     ApiKeyRequest,
@@ -192,6 +195,7 @@ pub enum Message {
     SteamCMDCheckUpdateRequested,
     SteamCMDCheckUpdateCompleted(Vec<u32>),
     DownloadAllRequested(u32),
+    DownloadMultipleRequested(Vec<u32>),
     DownloadAllConfirmed(Arc<BTreeSet<u32>>),
 
     Collections(CollectionsMessage),
@@ -220,6 +224,7 @@ pub enum Message {
     ProfileItemSelected(u32),
     ProfileImportSaveRequested(usize),
     ProfileViewSaveRequested(usize),
+    ProfileImportCollectionRequested(Arc<Collection>),
     ActiveProfileSelected(String),
 
     LoadPrepareProfile(bool),
@@ -300,13 +305,17 @@ pub enum AppPage {
     Main,
     Library,
     Profiles,
+    // Potential TODO: just collapse this into one page
+    // with a toggle to switch between the two?
+    #[strum(to_string = "Workshop Items")]
     Browse,
+    #[strum(to_string = "Workshop Collections")]
+    Collections,
     SteamCMD,
     Settings,
     Downloads,
     #[strum(to_string = "Game Logs")]
     GameLogs,
-    Collections,
 }
 
 #[derive(Debug, Derivative, Clone)]
@@ -322,7 +331,7 @@ pub enum AppModal {
     Busy,
     BusyMessage(String),
     ErrorMessage(String, String),
-    AsyncDialog {
+    AsyncChoose {
         title: String,
         body: String,
         #[derivative(PartialEq = "ignore")]
@@ -331,6 +340,7 @@ pub enum AppModal {
         key: AsyncDialogKey,
         strategy: AsyncDialogStrategy,
     },
+    AsyncDialog(AsyncDialog),
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -352,6 +362,8 @@ pub enum AsyncDialogKey {
     GameFind,
     LocalFind,
     DownloadAllConfirm,
+    DownloadMultipleConfirm,
+    ProfileImportCollection,
 }
 
 impl AppModal {
@@ -368,11 +380,12 @@ impl AppModal {
             Busy => false,
             BusyMessage(_) => false,
             ErrorMessage(_, _) => true,
-            AsyncDialog { .. } => false,
+            AsyncChoose { .. } => false,
+            AsyncDialog(_) => false,
         }
     }
 
-    fn async_dialog<T: Into<String>, B: Into<String>>(
+    fn async_choose<T: Into<String>, B: Into<String>>(
         key: AsyncDialogKey,
         title: T,
         body: B,
@@ -381,7 +394,7 @@ impl AppModal {
     ) -> (Self, Receiver<usize>) {
         let (sender, receiver) = iced::futures::channel::mpsc::channel(1);
         (
-            Self::AsyncDialog {
+            Self::AsyncChoose {
                 key,
                 title: title.into(),
                 body: body.into(),
@@ -763,15 +776,15 @@ impl App {
                     return task;
                 }
             }
-            Message::AsyncDialogResolve(key, choice) => {
+            Message::AsyncChooseResolve(key, choice) => {
                 if let Some(index) =
                     self.modal_stack
                         .iter()
                         .enumerate()
                         .find_map(|(index, modal)| {
-                            matches!(modal, AppModal::AsyncDialog { key: this_key, .. } if *this_key == key).then_some(index)
+                            matches!(modal, AppModal::AsyncChoose { key: this_key, .. } if *this_key == key).then_some(index)
                         })
-                    && let AppModal::AsyncDialog { mut sender, .. } = self.modal_stack.remove(index)
+                    && let AppModal::AsyncChoose { mut sender, .. } = self.modal_stack.remove(index)
                 {
                     return Task::future(async move {
                         if let Err(err) = sender.send(choice).await {
@@ -781,8 +794,41 @@ impl App {
                     });
                 }
             }
-            Message::AsyncDialogCancelled(key) => {
-                self.modal_stack.retain(|modal| !matches!(modal, AppModal::AsyncDialog { key: this, .. } if *this == key));
+            Message::AsyncChooseCancelled(key) => {
+                self.modal_stack.retain(|modal| !matches!(modal, AppModal::AsyncChoose { key: this, .. } if *this == key));
+            }
+            Message::AsyncDialogUpdate(key, field, value) => {
+                if let Some(dialog) = self.modal_stack.iter_mut().find_map(|modal| match modal {
+                    AppModal::AsyncDialog(dialog) if dialog.key == key => Some(dialog),
+                    _ => None,
+                }) {
+                    dialog
+                        .fields
+                        .0
+                        .entry(field)
+                        .and_modify(|field| *field = value);
+                }
+            }
+            Message::AsyncDialogResolved(key, submitted) => {
+                if let Some(index) =
+                    self.modal_stack
+                        .iter()
+                        .enumerate()
+                        .find_map(|(index, modal)| {
+                            matches!(modal, AppModal::AsyncDialog(dialog) if dialog.key == key)
+                                .then_some(index)
+                        })
+                    && let AppModal::AsyncDialog(AsyncDialog {
+                        fields, mut sender, ..
+                    }) = self.modal_stack.remove(index)
+                {
+                    return Task::future(async move {
+                        if let Err(err) = sender.send(submitted.then_some(fields)).await {
+                            eprintln!("Error resolving async dialog: {err:?}")
+                        }
+                        Message::None
+                    });
+                }
             }
             Message::AbortTask(key) => {
                 if let Some(handle) = self.abortable_handles.remove(&key) {
@@ -1387,7 +1433,7 @@ impl App {
                             let list = to_download.iter().map(|&id| {
                                 format!("{} ({id})", cache.get_details(id).as_deref().map(|f| f.title.as_str()).unwrap_or("UNKNOWN"))
                             }).join("\n");
-                            let (modal, mut rec) = AppModal::async_dialog(
+                            let (modal, mut rec) = AppModal::async_choose(
                                 AsyncDialogKey::DownloadAllConfirm,
                                 "Download All?",
                                 format!("The following items have not been downloaded yet:\n{list}"),
@@ -1408,6 +1454,37 @@ impl App {
                         }
                     }
                 })).chain(Task::done(Message::SetBusy(false)));
+            }
+            Message::DownloadMultipleRequested(ids) => {
+                let ids = ids
+                    .iter()
+                    .filter(|id| !self.item_downloaded(**id))
+                    .copied()
+                    .collect::<BTreeSet<_>>();
+                let (modal, mut rec) = AppModal::async_choose(
+                    AsyncDialogKey::DownloadMultipleConfirm,
+                    "Download All?",
+                    ids.iter()
+                        .map(|id| {
+                            if let Some(details) = self.file_cache.get_details(*id) {
+                                format!("{} ({id})", details.title)
+                            } else {
+                                format!("UNKNOWN ({id})")
+                            }
+                        })
+                        .join(", "),
+                    vec!["No".to_string(), "Yes".to_string()],
+                    AsyncDialogStrategy::Replace,
+                );
+
+                return Task::done(Message::OpenModal(Arc::new(modal))).chain(Task::future(
+                    async move {
+                        match rec.next().await {
+                            Some(1) => Message::DownloadAllConfirmed(Arc::new(ids)),
+                            _ => Message::None,
+                        }
+                    },
+                ));
             }
             Message::DownloadAllConfirmed(ids) => {
                 return Task::batch(
@@ -1696,6 +1773,57 @@ impl App {
                     }))
                     .chain(Task::done(Message::SetBusy(false)));
             }
+            Message::ProfileImportCollectionRequested(collection) => {
+                let (dialog, mut receiver) =
+                    AsyncDialog::builder(AsyncDialogKey::ProfileImportCollection, "Set Name", "")
+                        .with_string_default("Name", &collection.title)
+                        .finish();
+
+                let next_unused = (0..usize::MAX)
+                    .find(|i| !self.save.profiles.contains_key(i))
+                    .expect("there should not reasonably be usize::MAX profiles");
+
+                let used_names = self
+                    .save
+                    .profiles
+                    .values()
+                    .map(|profile| profile.name.clone())
+                    .collect::<Vec<_>>();
+
+                return Task::batch([
+                    Task::future(async move {
+                        match receiver.next().await.flatten() {
+                            Some(fields) => {
+                                let name =
+                                    fields.get_string("Name").unwrap_or_default().to_string();
+
+                                if name.is_empty() {
+                                    Message::display_error(
+                                        "Empty Name",
+                                        "Cannot create a profile with no name.",
+                                    )
+                                } else if used_names.contains(&name) {
+                                    Message::display_error(
+                                        "Name In Use",
+                                        "There is already a profile with this name.",
+                                    )
+                                } else {
+                                    Message::Chained(vec![
+                                        Message::ProfileAddEdited(name),
+                                        Message::ProfileAddCompleted(true),
+                                        Message::ProfileAddItems(
+                                            next_unused,
+                                            collection.items.clone(),
+                                        ),
+                                    ])
+                                }
+                            }
+                            None => Message::None,
+                        }
+                    }),
+                    Task::done(Message::OpenModal(Arc::new(AppModal::AsyncDialog(dialog)))),
+                ]);
+            }
             Message::ActiveProfileSelected(name) => {
                 self.save.active_profile = self
                     .save
@@ -1875,7 +2003,7 @@ impl App {
             }
             Message::LoadFindGameMatched(mut path) => {
                 path.pop();
-                let (modal, mut rec) = AppModal::async_dialog(
+                let (modal, mut rec) = AppModal::async_choose(
                     AsyncDialogKey::GameFind,
                     "Found Game Path",
                     format!(
@@ -1922,7 +2050,7 @@ impl App {
                 }));
             }
             Message::LoadFindLocalMatched(path) => {
-                let (modal, mut rec) = AppModal::async_dialog(
+                let (modal, mut rec) = AppModal::async_choose(
                     AsyncDialogKey::GameFind,
                     "Found Local Path",
                     format!(
@@ -2422,8 +2550,8 @@ impl App {
         .into()
     }
 
-    fn async_dialog_modal<'a>(&'a self, dialog: &'a AppModal) -> Element<'a, Message> {
-        let AppModal::AsyncDialog {
+    fn async_choose_modal<'a>(&'a self, dialog: &'a AppModal) -> Element<'a, Message> {
+        let AppModal::AsyncChoose {
             key,
             title,
             body,
@@ -2432,18 +2560,18 @@ impl App {
             strategy: _,
         } = dialog
         else {
-            panic!("async_dialog_modal should only be passed an async dialog")
+            panic!("async_choose_modal should only be passed an async choose modal")
         };
 
         iced_aw::card(text(title).width(Fill), column![scrollable(text(body)),])
             .foot(row(options.iter().enumerate().map(|(i, display)| {
-                    button(text(display))
-                        .on_press(Message::AsyncDialogResolve(*key, i))
-                        .into()
+                button(text(display))
+                    .on_press(Message::AsyncChooseResolve(*key, i))
+                    .into()
             })))
             .max_height(500.0)
             .width(Fill)
-        .into()
+            .into()
     }
 
     fn settings_page(&self) -> Element<'_, Message> {
@@ -2591,11 +2719,12 @@ impl App {
                         AppModal::AddToProfileRequest(ids) => self.add_to_profile_modal(ids),
                         AppModal::ItemDetailedView(id) => self.view_item_detailed(*id),
                         AppModal::CollectionDetailedView(source) => self.collections.view_collection_detailed(self, source),
-                        dialog @ AppModal::AsyncDialog {
+                        AppModal::AsyncDialog(dialog) => dialog.view().max_width(512.0).into(),
+                        dialog @ AppModal::AsyncChoose {
                             strategy: AsyncDialogStrategy::Stack | AsyncDialogStrategy::Replace,
                             ..
-                        } => self.async_dialog_modal(dialog),
-                        dialog @ AppModal::AsyncDialog {
+                        } => self.async_choose_modal(dialog),
+                        dialog @ AppModal::AsyncChoose {
                             strategy: AsyncDialogStrategy::Queue,
                             key: current_key,
                             ..
@@ -2605,13 +2734,13 @@ impl App {
                                 .iter()
                                 .take_while(|other| other != &modal)
                                 .any(|other| {
-                                    matches!(other, AppModal::AsyncDialog { key, .. } if key == current_key)
+                                    matches!(other, AppModal::AsyncChoose { key, .. } if key == current_key)
                                 })
                             {
                                 return None;
                             }
 
-                            self.async_dialog_modal(dialog)
+                            self.async_choose_modal(dialog)
                         }
 
                         AppModal::Busy => self.busy_modal(),

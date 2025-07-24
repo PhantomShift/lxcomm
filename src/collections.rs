@@ -17,7 +17,7 @@ use crate::{
     App, LOCAL_COLLECTIONS_DIR, Message,
     browser::WorkshopBrowser,
     extensions::DetailsExtension,
-    reset_scroll, tooltip,
+    reset_scroll,
     web::{self, CollectionQueryResponse, ResolverMessage},
 };
 
@@ -242,7 +242,7 @@ impl CollectionsState {
     pub fn view_collection_detailed<'a>(
         &'a self,
         state: &'a App,
-        source: &CollectionSource,
+        source: &'a CollectionSource,
     ) -> Element<'a, Message> {
         let Some(collection) = (match source {
             CollectionSource::Local(path) => self.local_collections.get(path).cloned(),
@@ -275,21 +275,40 @@ impl CollectionsState {
                             web::image_from_source(&state.images, collection.image.clone())
                                 .max_height(300)
                                 .max_width(300),
-                            column![
-                                text(collection.title.clone()),
-                                text(format!("Source: {}", collection.source)),
-                                row![
-                                    button("Download All").on_press_maybe(match source {
-                                        CollectionSource::Workshop(id) =>
-                                            Some(Message::DownloadAllRequested(*id)),
-                                        _ => None,
-                                    }),
-                                    button("Add All to Profile"),
-                                    button("Import as Profile")
-                                ],
-                                tooltip!(button("Save As Local"), "Not yet implemented"),
-                            ]
-                            .height(Shrink)
+                            {
+                                let collection = collection.clone();
+                                column![
+                                    text(collection.title.clone()).shaping(text::Shaping::Advanced),
+                                    text(format!("Source: {}", collection.source)),
+                                    row![
+                                        button("Download All").on_press_with({
+                                            let collection = collection.clone();
+                                            move || match collection.source {
+                                                CollectionSource::Workshop(_) => {
+                                                    Message::DownloadMultipleRequested(
+                                                        collection.items.clone(),
+                                                    )
+                                                }
+                                                _ => Message::None,
+                                            }
+                                        }),
+                                        button("Add All to Profile").on_press_with({
+                                            let collection = collection.clone();
+                                            move || {
+                                                Message::ItemDetailsAddToLibraryRequest(
+                                                    collection.items.clone(),
+                                                )
+                                            }
+                                        }),
+                                        button("Import as Profile").on_press(
+                                            Message::ProfileImportCollectionRequested(
+                                                collection.clone()
+                                            )
+                                        )
+                                    ],
+                                ]
+                                .height(Shrink)
+                            }
                         ])
                         .push(
                             container(

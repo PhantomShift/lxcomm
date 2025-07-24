@@ -353,7 +353,7 @@ impl Editor {
         Ok(())
     }
 
-    pub fn view(&self, state: &App) -> Element<'_, Message> {
+    pub fn view(&self, _state: &App) -> Element<'_, Message> {
         let buttons = self
             .original_buffers
             .keys()
