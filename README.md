@@ -68,11 +68,11 @@ a secrets provider for your desktop environment (i.e. kdewallet on plasma) insta
 
 Now that you're logged into SteamCMD and have an API key entered,
 you can get to actually downloading and installing mods.
-If you head to the `Browse` tab at the top, you'll be greeted with a browser that allows
+If you head to the `Workshop Items` tab at the top, you'll be greeted with a browser that allows
 you to explore XCOM2's Steam workshop items straight from LXCOMM. It goes without saying that
 the first mods you'll want to download are WOTC Community Highlander along with the Alien Hunters Community Highlander plugin if you have the Alien Hunters DLC.
-These two mods are most easily found by searching "community highlander"
-with the `Most Popular` ranking (don't ask me why, I don't run Steam).
+Make sure that you choose *either* the beta OR the stable version
+(though you can download both if you want, just make sure you add the correct ones to your profile).
 
 From the browsing page, you can either download the mod directly, or take a look at its details
 with the `View` button. For now, you can just hit download on the relevant mods you need downloaded.
@@ -160,13 +160,14 @@ In no particular order:
 - [x] Options for ranking search results in browsing
 - [ ] Per-profile character pools
 - [x] Read most recent game logs
-- [ ] Recurse full mod dependency tree when checking for missing dependencies
+- [x] Recurse full mod dependency tree when checking for missing dependencies
 - [ ] Support manually downloaded mods
-- [ ] Support workshop collections
-- [ ] Copying/imporing+exporting profiles-
+- [x] Support workshop collections
+- [ ] Copying/imporing+exporting profiles
 - [ ] Disk cache trimming
-- [ ] Ability to enter workshop ID directly for browsing or downloading (due to unreliable browsing results)
+- [x] ~~Ability to enter workshop ID directly for browsing or downloading (due to unreliable browsing results)~~ Search results should now be all-inclusive
 - [ ] Ability to pause downloads
+- [ ] Investigate controller navigation in iced (or libcosmic) (for the Steam Deck gamers)
 
 ## License
 
