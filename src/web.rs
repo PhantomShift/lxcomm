@@ -622,9 +622,16 @@ pub async fn query_collections(
 /// unknown if this is called, otherwise it is cached somewhere on the filesystem.
 pub async fn get_mod_details<U: Copy + Into<u64>>(
     client: Steam,
-    ids: &[U],
+    ids: impl AsRef<[U]>,
 ) -> Result<Vec<steam_rs::published_file_service::query_files::File>> {
-    let ids = ids.iter().map(|u| (*u).into()).collect();
+    let ids = ids.as_ref().iter().map(|u| (*u).into()).fold(
+        Vec::with_capacity(ids.as_ref().len()),
+        |mut v, id| {
+            v.push(id);
+            v
+        },
+    );
+
     let details = client
         .get_details(
             ids,
@@ -654,6 +661,55 @@ pub async fn get_mod_details<U: Copy + Into<u64>>(
             FileDetailResult::Invalid(_) => None,
         })
         .collect())
+}
+
+/// Returns the the list of mods in the given list that were outdated, with the time it was updated.
+pub async fn check_mods_outdated(
+    client: Steam,
+    items: Vec<(u64, u64)>,
+) -> Result<HashMap<u32, u64>> {
+    let ids = items.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+    let mut outdated = HashMap::with_capacity(ids.len());
+
+    // Potential TODO - allow partial failures
+    const PER_BATCH_MAX: usize = 128;
+    let mut index = 0;
+    while index < ids.len() {
+        let range = index..(index + PER_BATCH_MAX).min(ids.len());
+        index = range.end;
+        let details = client
+            .get_details(
+                &ids[range],
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                None,
+                1,
+                XCOM_APPID,
+                false,
+                None,
+                None,
+                false,
+            )
+            .await?;
+
+        for details in details.published_file_details {
+            if let FileDetailResult::Valid(file) = details
+                && let Ok(file_id) = file.published_file_id.parse::<u64>()
+                && let Some((_, last_updated)) = items.iter().find(|(id, _)| *id == file_id)
+                && file.time_updated as u64 > *last_updated
+            {
+                outdated.insert(file_id as u32, file.time_updated as u64);
+            }
+        }
+    }
+
+    Ok(outdated)
 }
 
 pub fn handle_url(url: reqwest::Url) -> Message {

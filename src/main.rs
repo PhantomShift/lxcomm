@@ -65,6 +65,7 @@ pub mod files;
 pub mod library;
 pub mod loading;
 pub mod markup;
+pub mod metadata;
 pub mod mod_edit;
 pub mod platform;
 pub mod steam_manifest;
@@ -192,11 +193,10 @@ pub enum Message {
     SteamCMDDownloadCompletedClear(Vec<u32>),
     SteamCMDDownloadErrorClear(Vec<u32>),
     DownloadCancelRequested(u32),
-    SteamCMDCheckUpdateRequested,
-    SteamCMDCheckUpdateCompleted(Vec<u32>),
     DownloadAllRequested(u32),
     DownloadMultipleRequested(Vec<u32>),
     DownloadAllConfirmed(Arc<BTreeSet<u32>>),
+    DownloadPushPending(Vec<u32>),
 
     Collections(CollectionsMessage),
     Settings(SettingsMessage),
@@ -206,6 +206,9 @@ pub enum Message {
     LibraryToggleAll(bool),
     LibraryUpdateRequest,
     LibraryScanRequest,
+    LibraryCheckOutdatedRequest,
+    LibraryForceCheckOutdated,
+    CheckOutdatedCompleted(HashMap<u32, u64>),
     LibraryAddToProfileRequest,
     LibraryAddToProfileToggleAll(bool),
     LibraryAddToProfileToggled(usize, bool),
@@ -284,6 +287,10 @@ pub enum Message {
 impl Message {
     fn display_error<T: Into<String>, M: Into<String>>(title: T, message: M) -> Self {
         Self::DisplayError(title.into(), message.into())
+    }
+
+    fn busy_message<M: Into<String>>(message: M) -> Self {
+        Self::SetBusyMessage(message.into())
     }
 }
 
@@ -450,6 +457,7 @@ pub struct App {
     save: AppSave,
     images: HashMap<String, image::Handle>,
     download_queue: RingMap<u32, u64>,
+    pending_queue: BTreeMap<u32, u64>,
     ongoing_downloads: RingMap<u32, u64>,
     completed_downloads: BTreeSet<u32>,
     errorred_downloads: BTreeMap<u32, String>,
@@ -497,7 +505,7 @@ enum AppSettingEditor {
 pub enum AppSettingEdit {
     String(&'static str, String),
     Secret(&'static str, String),
-    Number(&'static str, String),
+    Number(&'static str, u32),
     Bool(&'static str, bool),
 }
 
@@ -720,6 +728,7 @@ impl App {
             steamcmd_log: Default::default(),
             images: HashMap::new(),
             download_queue: RingMap::new(),
+            pending_queue: BTreeMap::new(),
             ongoing_downloads,
             completed_downloads: BTreeSet::new(),
             errorred_downloads: BTreeMap::new(),
@@ -745,7 +754,11 @@ impl App {
             Ok(key) if key.is_empty() => Task::done(Message::ApiKeyRequest),
             Ok(key) => {
                 app.api_key = SecretString::from(key);
-                Task::none()
+                if app.settings.check_updates_on_startup {
+                    Task::done(Message::LibraryForceCheckOutdated)
+                } else {
+                    Task::none()
+                }
             }
             Err(err) => {
                 let task = Task::done(Message::ApiKeyRequest);
@@ -1392,23 +1405,6 @@ impl App {
                     self.errorred_downloads.remove(&id);
                 }
             }
-            Message::SteamCMDCheckUpdateRequested => {
-                let ids = self.library.items.keys().copied().collect::<Vec<_>>();
-                let cache = self.file_cache.clone();
-                let state = self.steamcmd_state.clone();
-
-                return Task::future(async move {
-                    match state.check_updates(ids, cache).await {
-                        Err(err) => {
-                            Message::display_error("Error Checking Updates", format!("{err:#?}"))
-                        }
-                        Ok(ids) => Message::SteamCMDCheckUpdateCompleted(ids),
-                    }
-                });
-            }
-            Message::SteamCMDCheckUpdateCompleted(ids) => {
-                println!("The following ids need to be updated: {ids:#?}");
-            }
             Message::DownloadAllRequested(id) => {
                 let client = Steam::new(self.api_key.expose_secret());
                 let cache = self.file_cache.clone();
@@ -1492,6 +1488,14 @@ impl App {
                         .map(|id| Task::done(Message::SteamCMDDownloadRequested(*id))),
                 );
             }
+            Message::DownloadPushPending(ids) => {
+                for id in ids {
+                    if let Some((id, _)) = self.pending_queue.remove_entry(&id) {
+                        self.download_queue.push_back(id, 0);
+                    }
+                }
+                return self.queue_downloads();
+            }
 
             Message::LibraryToggleAll(toggle) => {
                 self.library
@@ -1519,6 +1523,83 @@ impl App {
             }
             Message::LibraryScanRequest => {
                 self.scan_downloads();
+            }
+            Message::LibraryCheckOutdatedRequest => {
+                let items = self
+                    .library
+                    .iter_selected()
+                    .filter(|item| {
+                        !self.is_downloading(item.id) && !self.pending_queue.contains_key(&item.id)
+                    })
+                    .map(|item| {
+                        let id = item.id;
+                        (
+                            id as u64,
+                            metadata::read_metadata(id, &self.settings.download_directory)
+                                .map(|meta| meta.time_downloaded)
+                                .unwrap_or_default(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let client = Steam::new(self.api_key.expose_secret());
+
+                return Task::done(Message::busy_message("Checking for Outdated Mods..."))
+                    .chain(Task::future(async move {
+                        match web::check_mods_outdated(client, items).await {
+                            Err(err) => Message::display_error(
+                                "Error Checking Updates",
+                                format!("{err:#?}"),
+                            ),
+                            Ok(outdated) => Message::CheckOutdatedCompleted(outdated),
+                        }
+                    }))
+                    .chain(Task::done(Message::SetBusy(false)));
+            }
+            Message::LibraryForceCheckOutdated => {
+                let items = self
+                    .library
+                    .items
+                    .keys()
+                    .map(|&id| {
+                        (
+                            id as u64,
+                            metadata::read_metadata(id, &self.settings.download_directory)
+                                .map(|meta| meta.time_downloaded)
+                                .unwrap_or_default(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let client = Steam::new(self.api_key.expose_secret());
+
+                return Task::done(Message::busy_message("Checking for Outdated Mods..."))
+                    .chain(Task::future(async move {
+                        match web::check_mods_outdated(client, items).await {
+                            Err(err) => Message::display_error(
+                                "Error Checking Updates",
+                                format!("{err:#?}"),
+                            ),
+                            Ok(outdated) => Message::CheckOutdatedCompleted(outdated),
+                        }
+                    }))
+                    .chain(Task::done(Message::SetBusy(false)));
+            }
+            Message::CheckOutdatedCompleted(outdated) => {
+                return if !outdated.is_empty() {
+                    for (id, time) in outdated {
+                        if !self.ongoing_downloads.contains_key(&id)
+                            && !self.download_queue.contains_key(&id)
+                        {
+                            self.pending_queue.insert(id, time);
+                        }
+                    }
+
+                    Task::done(Message::SetPage(AppPage::Downloads))
+                } else {
+                    Task::done(Message::display_error(
+                        "No Updates",
+                        "All mods that aren't downloading are up to date!",
+                    ))
+                };
             }
             Message::LibraryAddToProfileRequest => {
                 for profile in self.save.profiles.values_mut() {
@@ -2241,21 +2322,7 @@ impl App {
                     apply!(name, String, new)
                 }
                 AppSettingEdit::Bool(name, new) => apply!(name, bool, new),
-                AppSettingEdit::Number(name, new) => {
-                    let Ok(parsed) = new.parse::<u32>() else {
-                        return Task::none();
-                    };
-
-                    let range = APP_SETTINGS_INFO
-                        .field(name)
-                        .and_then(|field| field.get_attribute::<AppSettingsUnsignedRange>())
-                        .map(AppSettingsUnsignedRange::to_owned)
-                        .unwrap_or_default();
-
-                    if (range.min..=range.max).contains(&parsed) {
-                        apply!(name, u32, parsed);
-                    }
-                }
+                AppSettingEdit::Number(name, new) => apply!(name, u32, new),
             },
             SettingsMessage::ResetToDefault => self.settings_editing = AppSettings::default(),
             SettingsMessage::ResetToSaved => self.settings_editing = self.settings.clone(),
@@ -2641,16 +2708,15 @@ impl App {
                     let value = settings
                         .get_field::<u32>(name)
                         .expect("number input should only be set for u32 values");
-                    let editor = text_input(
-                        AppSettings::default()
-                            .get_field::<u32>(name)
-                            .expect("number input should only be set for u32 values")
-                            .to_string()
-                            .as_str(),
-                        value.to_string().as_str(),
-                    )
-                    .width(200)
-                    .on_input(|new| AppSettingEdit::Number(name, new).into());
+                    let bounds = field
+                        .get_attribute::<AppSettingsUnsignedRange>()
+                        .cloned()
+                        .unwrap_or_default()
+                        .apply(|range| range.min..=range.max);
+
+                    let editor = iced_aw::number_input(value, bounds, |_| Message::None)
+                        .on_input(|new| AppSettingEdit::Number(name, new).into())
+                        .width(200);
 
                     if field.get_attribute::<AppSettingsTimePreview>().is_some() {
                         let preview =
@@ -2841,7 +2907,6 @@ impl App {
                 row![
                     button("Build").on_press(Message::LoadPrepareProfile(true)),
                     button("Launch").on_press(Message::LoadLaunchGame),
-                    // button("Text Check Update").on_press(Message::SteamCMDCheckUpdateRequested)
                 ].spacing(8),
             ]
             .padding(16),
@@ -2913,6 +2978,9 @@ impl App {
                 row![button("Rescan").on_press(Message::LibraryScanRequest)],
                 vertical_rule(2),
                 row![
+                    button("Check Updates").on_press_maybe(
+                        some_selected.then_some(Message::LibraryCheckOutdatedRequest)
+                    ),
                     button("Update")
                         .on_press_maybe(some_selected.then_some(Message::LibraryUpdateRequest)),
                     button("Add to Profile").on_press_maybe(
@@ -3112,7 +3180,8 @@ impl App {
                         text!(
                             "{} ({id}) - {size_display} of {total_display}",
                             details.title
-                        ),
+                        )
+                        .shaping(text::Shaping::Advanced),
                         stack![
                             progress_bar(0.0..=total_size as f32, *size as f32),
                             container(text!("{percent:.2}%").align_x(Center).align_y(Center))
@@ -3144,6 +3213,7 @@ impl App {
         let queue_empty = self.download_queue.is_empty();
         let completed_empty = self.completed_downloads.is_empty();
         let errored_empty = self.errorred_downloads.is_empty();
+        let pending_empty = self.pending_queue.is_empty();
 
         if !ongoing_empty {
             col = col.push(text("Ongoing Downloads").size(24));
@@ -3176,7 +3246,7 @@ impl App {
                             format!("Unknown ({id})")
                         };
                         row![
-                            text(info),
+                            text(info).shaping(text::Shaping::Advanced),
                             horizontal_space(),
                             button("Clear")
                                 .on_press(Message::SteamCMDDownloadCompletedClear(vec![*id])),
@@ -3186,12 +3256,43 @@ impl App {
             )
         }
 
+        if !pending_empty {
+            col = col.push(
+                row![
+                    text("Pending Updates").size(24),
+                    horizontal_space(),
+                    button("Download All").on_press_with(|| Message::DownloadPushPending(
+                        self.pending_queue.keys().copied().collect_vec()
+                    ))
+                ]
+                .align_y(Vertical::Bottom),
+            );
+            col = col.extend(self.pending_queue.iter().map(|(&id, &time)| {
+                let info = if let Some(details) = self.file_cache.get_details(id) {
+                    format!("{} ({id})", details.title)
+                } else {
+                    format!("Unknown ({id})")
+                };
+                let time = chrono::DateTime::from_timestamp(time as i64, 0).unwrap_or_default();
+                let formatted = time.naive_local().format("%Y %B %e - %I:%M%p").to_string();
+                row![
+                    column![
+                        text(info).shaping(text::Shaping::Advanced),
+                        text!("Last Updated - {formatted}")
+                    ],
+                    horizontal_space(),
+                    button("Download").on_press(Message::DownloadPushPending(vec![id]))
+                ]
+                .into()
+            }))
+        }
+
         if !errored_empty {
             col = col.push(
                 row![
                     text("Errored Downloads").size(24),
                     horizontal_space(),
-                    button("Clear All").on_press(Message::SteamCMDDownloadErrorClear(
+                    button("Clear All").on_press_with(|| Message::SteamCMDDownloadErrorClear(
                         self.errorred_downloads.keys().copied().collect()
                     ))
                 ]
@@ -3216,7 +3317,7 @@ impl App {
             ));
         }
 
-        if ongoing_empty && queue_empty && completed_empty && errored_empty {
+        if ongoing_empty && queue_empty && completed_empty && errored_empty && pending_empty {
             col = col.push(text("No ongoing downloads..."))
         }
 

@@ -19,6 +19,7 @@ use secrecy::{ExposeSecret, SecretString};
 use crate::{
     Message, X2_WOTCCOMMUNITY_HIGHLANDER_ID, XCOM_APPID,
     files::{self, Cache},
+    metadata::ProgramMetadata,
     steam_manifest::{AppWorkshopManifest, ManifestWorkshopItem, ManifestWorkshopItemDetails},
 };
 
@@ -94,6 +95,12 @@ impl SteamCMDExitCommand {
     }
 }
 
+// TODO - Persistent SteamCMD session
+// Currently all download requests require one login request per attempt,
+// which can quickly lead to being rate limited if downloading lots of mods all at once.
+// This can be alleviated by issuing on a rate-limit on our side,
+// but we still only have a fraction of our allowed limit as long as
+// login is enacted every single time.
 #[derive(Debug, Default, Clone)]
 pub struct State {
     pub username: String,
@@ -341,6 +348,18 @@ impl State {
                     Box::new(Error::Message(line.clone())),
                     id,
                 ));
+            }
+
+            let path = files::get_item_directory(&self.download_dir, id);
+            let last_updated = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("now should always be greater than unix epoch")
+                .as_secs();
+            let metadata = ProgramMetadata {
+                time_downloaded: last_updated,
+            };
+            if let Err(err) = metadata.save_in(path) {
+                eprintln!("Error writing LXCOMM metadata for {id}: {err:?}");
             }
 
             id
