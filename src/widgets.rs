@@ -2,6 +2,7 @@ use derivative::Derivative;
 use iced::widget::{
     button, checkbox, column, container, horizontal_space, row, text, text_input, toggler,
 };
+use iced_aw::widget::labeled_frame::LabeledFrame;
 
 use crate::{AsyncDialogKey, Message};
 
@@ -91,21 +92,24 @@ impl AsyncDialog {
         iced_aw::card(
             text(&self.title),
             column![text(&self.body)].extend(self.fields.0.iter().map(|(name, field)| {
-                row![
+                LabeledFrame::new(
                     text(name),
                     match field {
-                        AsyncDialogField::String(s) =>
-                            container(text_input(name, s).on_input(on_update!(name, String))),
+                        AsyncDialogField::String(s) => {
+                            container(text_input(name, s).on_input(on_update!(name, String)))
+                        }
                         AsyncDialogField::Number(p) => container(
                             iced_aw::number_input(p, i64::MIN..i64::MAX, |_| Message::None)
-                                .on_input(on_update!(name, Number))
+                                .on_input(on_update!(name, Number)),
                         ),
-                        AsyncDialogField::Toggle(b) =>
-                            container(toggler(*b).on_toggle(on_update!(name, Toggle))),
-                        AsyncDialogField::Checkbox(b) =>
-                            container(checkbox("", *b).on_toggle(on_update!(name, Checkbox))),
-                    }
-                ]
+                        AsyncDialogField::Toggle(b) => {
+                            container(toggler(*b).on_toggle(on_update!(name, Toggle)))
+                        }
+                        AsyncDialogField::Checkbox(b) => {
+                            container(checkbox("", *b).on_toggle(on_update!(name, Checkbox)))
+                        }
+                    },
+                )
                 .into()
             })),
         )
