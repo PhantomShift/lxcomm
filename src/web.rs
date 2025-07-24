@@ -110,8 +110,8 @@ impl From<ResolverMessage> for Message {
 }
 
 pub fn setup_background_resolver() -> impl Stream<Item = Message> {
-    iced::stream::channel(100, async |mut output| {
-        let (sender, mut receiver) = iced::futures::channel::mpsc::channel(100);
+    iced::stream::channel(256, async |mut output| {
+        let (sender, mut receiver) = iced::futures::channel::mpsc::channel(256);
         if let Err(err) = output
             .send(Message::BackgroundResolverMessage(ResolverMessage::Setup(
                 sender,
@@ -138,10 +138,10 @@ pub fn setup_background_resolver() -> impl Stream<Item = Message> {
                 }
             }
 
-            if !unresolved.is_empty()
+            while !unresolved.is_empty()
                 && let Some(current_client) = &client
             {
-                let range = ..50.min(unresolved.len());
+                let range = ..128.min(unresolved.len());
                 match get_mod_details(current_client.clone(), &unresolved[range]).await {
                     Ok(files) => {
                         if let Err(err) = output
@@ -165,6 +165,9 @@ pub fn setup_background_resolver() -> impl Stream<Item = Message> {
                             );
                         }
                     }
+                }
+                if !unresolved.is_empty() {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
             }
         }
