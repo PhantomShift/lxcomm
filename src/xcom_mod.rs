@@ -34,35 +34,37 @@ impl ModMetadata {
         source: S,
         name: N,
     ) -> Result<Self> {
-        let mut lines = source.as_ref().lines();
+        let lines = source
+            .as_ref()
+            .lines()
+            .map(str::to_string)
+            .collect::<Vec<String>>();
         let _header = lines
-            .next()
-            .filter(|line| line.contains("[mod]"))
+            .iter()
+            .find(|line| line.contains("[mod]"))
             .ok_or(Error::MissingField("header"))?;
 
-        macro_rules! parse_line {
+        macro_rules! find_line {
             ($label:expr,$type:ty) => {
                 lines
-                    .next()
-                    .and_then(|line| line.split_once("="))
-                    .map(|(left, right)| {
-                        if !left.eq_ignore_ascii_case($label) {
-                            return Err(Error::MismatchedField($label, left.to_owned()));
-                        }
-                        right
-                            .parse::<$type>()
-                            .map_err(|err| Error::ParseError(Box::new(err)))
+                    .iter()
+                    .filter_map(|line| line.split_once("="))
+                    .find_map(|(left, right)| {
+                        left.eq_ignore_ascii_case($label).then_some(
+                            right
+                                .parse::<$type>()
+                                .map_err(|err| Error::ParseError(Box::new(err))),
+                        )
                     })
-                    // .ok_or(Error::MissingField($label))
                     .ok_or(Error::MissingField($label))
                     .flatten()
             };
         }
 
-        let published_file_id = parse_line!("publishedFileId", u32)?;
-        let title = parse_line!("Title", String)?;
-        let description = parse_line!("Description", String)?;
-        let requires_xpack = parse_line!("RequiresXPACK", bool).unwrap_or_default();
+        let published_file_id = find_line!("publishedFileId", u32)?;
+        let title = find_line!("Title", String)?;
+        let description = find_line!("Description", String).unwrap_or_default();
+        let requires_xpack = find_line!("RequiresXPACK", bool).unwrap_or_default();
 
         Ok(Self {
             published_file_id,
