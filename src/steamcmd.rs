@@ -1,16 +1,20 @@
 use std::{
-    collections::BTreeMap, path::PathBuf, process::ExitStatusError, string::FromUtf8Error,
-    sync::Arc,
+    collections::{BTreeMap, VecDeque},
+    io::{BufRead, Write},
+    path::{Path, PathBuf},
+    process::{ExitStatusError, Stdio},
+    string::FromUtf8Error,
+    sync::{Arc, atomic::AtomicBool},
 };
 
 use bstr::{BString, ByteSlice};
-use iced::futures::{SinkExt, Stream, channel::mpsc::Sender};
+use iced::futures::{SinkExt, Stream, StreamExt, channel::mpsc::Sender};
 use steam_rs::published_file_service::query_files::File;
 use thiserror::Error;
 use tokio::{
     io::{AsyncBufReadExt, BufReader, Lines},
     process::ChildStdout,
-    sync::Mutex,
+    sync::{Mutex, broadcast},
 };
 use which::which;
 
@@ -50,6 +54,10 @@ pub enum ExitCode {
 
 #[derive(Debug, Error, Default)]
 pub enum Error {
+    #[error("SteamCMD session closed during operation")]
+    SessionClosed,
+    #[error("failed to send through channel: {0}")]
+    SendError(#[from] std::sync::mpsc::SendError<String>),
     #[error("download failed")]
     DownloadFailure(Box<Error>, u32),
     #[error("child process exited with failure: {0}")]
@@ -69,6 +77,12 @@ pub enum Error {
     #[default]
     #[error("unknown error occurred")]
     Unkown,
+}
+
+impl From<String> for Error {
+    fn from(value: String) -> Self {
+        Self::Message(value)
+    }
 }
 
 pub type Result<R> = std::result::Result<R, Error>;
@@ -93,6 +107,284 @@ impl SteamCMDExitCommand {
             Self::LogoutAndQuit => &[b"logout", b"quit"],
         }
     }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum SessionEvent {
+    /// Session was killed for some reason
+    Shutdown,
+    Line(String),
+    ReadError(String),
+    WriteError(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct Session {
+    buffer: Arc<Mutex<VecDeque<String>>>,
+    request_sender: std::sync::mpsc::Sender<String>,
+    event_receiver: Arc<broadcast::Receiver<SessionEvent>>,
+    logged_in: Arc<AtomicBool>,
+    busy: Arc<AtomicBool>,
+    killed: Arc<AtomicBool>,
+    _child: Arc<std::process::Child>,
+    _handles: Arc<[std::thread::JoinHandle<()>]>,
+}
+
+impl Session {
+    /// Panics if run in async context (creates a new tokio runtime and blocks on it)
+    pub fn init() -> Result<Session> {
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(async { Self::init_async().await })
+    }
+
+    pub async fn init_async() -> Result<Session> {
+        let mut command = steamcmd_command(&None)?;
+        // Check errors manually
+        command.args(["@ShutdownOnFailedCommand", "0"]);
+        command.stdin(Stdio::piped());
+        command.stdout(Stdio::piped());
+
+        let mut child = command.spawn()?;
+        let buffer = Arc::new(Mutex::new(VecDeque::new()));
+        let killed = Arc::new(AtomicBool::new(false));
+
+        let stdout = child.stdout.take().ok_or(Error::Message(
+            "failed to steamcmd stdout handle".to_string(),
+        ))?;
+        let (event_sender, event_receiver) = broadcast::channel(16);
+        let stdout_handle = std::thread::spawn({
+            let event_sender = event_sender.clone();
+            let reader = std::io::BufReader::new(stdout);
+            let buffer = buffer.clone();
+            let killed = killed.clone();
+            move || {
+                let mut lines = reader.lines();
+                while let Some(Ok(line)) = lines.next() {
+                    dbg!(&line);
+                    let line = strip_ansi_escapes::strip_str(line);
+                    buffer.blocking_lock().push_back(line.clone());
+                    let _ = event_sender.send(SessionEvent::Line(line));
+                }
+                let _ = event_sender.send(SessionEvent::Shutdown);
+                println!("SteamCMD output thread has shut down...");
+                killed.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+
+        let mut stdin = child.stdin.take().ok_or(Error::Message(
+            "failed to get steamcmd stdin handle".to_string(),
+        ))?;
+        let (request_sender, request_receiver) = std::sync::mpsc::channel::<String>();
+        let stdin_handle = std::thread::spawn({
+            let event_sender = event_sender.clone();
+            move || {
+                for line in request_receiver.iter() {
+                    if let Err(err) = stdin.write_all(line.as_bytes()) {
+                        let _ = event_sender.send(SessionEvent::WriteError(err.to_string()));
+                    }
+                }
+            }
+        });
+
+        let session = Self {
+            buffer,
+            request_sender,
+            event_receiver: Arc::new(event_receiver),
+            logged_in: Arc::new(AtomicBool::new(false)),
+            busy: Arc::new(AtomicBool::new(false)),
+            killed,
+            _child: Arc::new(child),
+            _handles: Arc::new([stdout_handle, stdin_handle]),
+        };
+
+        // Potential TODO - Move this to its own function i.e. "boot"
+        // that should be called immediately after successful init
+        // Attempt to skip bootup
+        println!("Attempting to skip bootup...");
+        session.await_line().await.ok_or(Error::SessionClosed)?;
+        while session.consume_line_async().await.is_some() {}
+        println!("Session initialized");
+
+        Ok(session)
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.busy.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    pub fn is_logged_in(&self) -> bool {
+        self.logged_in.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    pub fn is_killed(&self) -> bool {
+        self.killed.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub async fn buffer_empty_async(&self) -> bool {
+        self.buffer.lock().await.is_empty()
+    }
+    pub async fn clear_buffer_async(&self) {
+        self.buffer.lock().await.clear();
+    }
+    pub async fn consume_line_async(&self) -> Option<String> {
+        self.buffer.lock().await.pop_front()
+    }
+    pub async fn await_line(&self) -> Option<String> {
+        let mut receiver = self.event_receiver.resubscribe();
+        loop {
+            if self.is_killed() {
+                return None;
+            }
+            match receiver.recv().await {
+                Ok(SessionEvent::Line(line)) => break Some(line),
+                Ok(SessionEvent::Shutdown) => break None,
+                Err(broadcast::error::RecvError::Closed) => break None,
+                _ => {}
+            }
+        }
+    }
+    pub fn lines(&self) -> impl Stream<Item = String> {
+        iced::futures::stream::unfold(self.event_receiver.resubscribe(), |mut receiver| {
+            Box::pin(async {
+                loop {
+                    if self.is_killed() {
+                        return None;
+                    }
+                    match receiver.recv().await {
+                        Ok(SessionEvent::Line(line)) => break Some((line, receiver)),
+                        Ok(SessionEvent::Shutdown) => break None,
+                        Err(broadcast::error::RecvError::Closed) => break None,
+                        _ => {}
+                    }
+                }
+            })
+        })
+    }
+
+    pub fn buffer_empty(&self) -> bool {
+        self.buffer.blocking_lock().is_empty()
+    }
+    pub fn consume_line(&self) -> Option<String> {
+        self.buffer.blocking_lock().pop_front()
+    }
+
+    /// Sends a command to the underlying SteamCMD session.
+    /// Automatically appends a new line.
+    fn send_command<S: Into<String>>(&self, command: S) -> Result<()> {
+        self.request_sender.clone().send(command.into() + "\n")?;
+        Ok(())
+    }
+
+    pub async fn find<S: AsRef<str>>(&self, s: S) -> Result<String> {
+        self.send_command(format!(r#"find "{}""#, s.as_ref()))?;
+        let mut result = String::new();
+        while self.buffer_empty_async().await {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        while let Some(line) = self.consume_line_async().await {
+            result.reserve_exact(line.len() + 1);
+            result.push('\n');
+            result.push_str(&line);
+        }
+
+        Ok(result)
+    }
+
+    pub async fn force_install_dir<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        if self.is_logged_in() {
+            eprintln!("WARNING: Setting install directory while logged in is not recommended");
+        }
+        self.send_command(format!("force_install_dir {}", path.as_ref().display()))
+    }
+
+    pub async fn log_in_cached(&self, user: &str) -> Result<()> {
+        self.send_command("@NoPromptForPassword 1")?;
+        self.send_command(format!("login {user}"))?;
+        while let Some(line) = self.await_line().await {
+            if line.contains("FAILED (No cached credentials and @NoPromptForPassword is set)") {
+                return Err(Error::LoginFailure);
+            } else if line.contains("Waiting for client config...OK") {
+                self.logged_in
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                return Ok(());
+            } else {
+                println!("Ignoring irrelevant line: {line}");
+            }
+        }
+        Err(Error::Message("session closed".to_string()))
+    }
+
+    pub async fn log_in(&self, user: &str, pass: &str, code: &str) -> Result<bool> {
+        self.send_command("@NoPromptForPassword 1")?;
+        self.send_command(format!("login {user} {pass} {code}"))?;
+        let mut lines = self.lines();
+        while let Some(line) = lines.next().await {
+            if line.contains("Waiting for client config...OK") {
+                self.logged_in
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                return Ok(true);
+            } else if line.contains("...ERROR (Invalid Password)") {
+                return Err(Error::LoginFailure);
+            }
+        }
+        Err(Error::Message("session closed".to_string()))
+    }
+
+    pub async fn log_out(&self) -> Result<()> {
+        self.send_command("logout")?;
+        while self.consume_line_async().await.is_some() {}
+        Ok(())
+    }
+
+    pub async fn quit(&self) -> Result<()> {
+        self.send_command("quit")?;
+        self.await_line().await;
+        self.killed
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub async fn workshop_download_item(&self, app_id: u64, file_id: u64) -> Result<()> {
+        self.send_command(format!("workshop_download_item {app_id} {file_id}"))?;
+        let mut lines = self.lines();
+        while let Some(line) = lines.next().await {
+            if line.starts_with("ERROR!") {
+                return Err(Error::Message(line));
+            } else if line.starts_with("Success") {
+                dbg!(line);
+                return Ok(());
+            }
+        }
+        Err(Error::SessionClosed)
+    }
+}
+
+#[tokio::test]
+async fn steamcmd_persistent() -> eyre::Result<()> {
+    let session = Session::init_async().await?;
+    println!("Getting commands");
+    let commands = session.find("workshop").await?;
+    println!("Commands:\n{commands}");
+
+    println!("Setting install directory to /tmp");
+    session.force_install_dir("/tmp/").await?;
+
+    println!("Logging in");
+    session.log_in_cached("anonymous").await?;
+
+    println!("Downloading a mod that can be downloaded anonymously...");
+    const BATTLE_ZONE_ID: u64 = 301650;
+    const MOD_ID: u64 = 2829669454;
+    session
+        .workshop_download_item(BATTLE_ZONE_ID, MOD_ID)
+        .await?;
+
+    println!("Logging out");
+    session.log_out().await?;
+    println!("Quitting");
+    session.quit().await?;
+
+    drop(session);
+
+    Ok(())
 }
 
 // TODO - Persistent SteamCMD session
@@ -130,12 +422,14 @@ pub fn which_steamcmd(given: &Option<PathBuf>) -> Result<PathBuf> {
     Err(Error::MissingExecutable)
 }
 
-#[cfg(not(target_os = "windows"))]
 /// Due to prominent issues with steamcmd in non-interactive sessions,
 /// we try to unbuffer the output if possible (based on [this tip](https://github.com/ValveSoftware/Source-1-Games/issues/1929#issuecomment-1341353626)).
 /// Relies on expect's `unbuffer` with coreutils `stdbuf` as a fallback.
 /// Returns the standard command unaltered if neither are found on the system,
 /// which may lead to degraded functionality.
+///
+/// Windows users will need to install uutils coreutils
+/// and add `stdbuf` alias to their path for this to function.
 fn steamcmd_command(given: &Option<PathBuf>) -> Result<std::process::Command> {
     #[cfg(target_os = "macos")]
     static STDBUF: &str = "gstdbuf";
@@ -144,26 +438,28 @@ fn steamcmd_command(given: &Option<PathBuf>) -> Result<std::process::Command> {
 
     let steamcmd = which_steamcmd(given)?;
 
-    if let Ok(unbuffer) = which("unbuffer") {
+    let command = if let Ok(unbuffer) = which("unbuffer") {
         let mut command = std::process::Command::new(unbuffer);
         command.arg(steamcmd);
-        Ok(command)
+        command
     } else if let Ok(stdbuf) = which(STDBUF) {
         let mut command = std::process::Command::new(stdbuf);
         command.arg("-o0").arg(steamcmd);
-        Ok(command)
+        command
     } else {
-        Ok(std::process::Command::new(steamcmd))
-    }
-}
+        std::process::Command::new(steamcmd)
+    };
 
-#[cfg(target_os = "windows")]
-fn steamcmd_command(given: &Option<PathBuf>) -> Result<std::process::Command> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    let mut command = std::process::Command::new(which_steamcmd(given)?);
-    // Suppress console
-    command.creation_flags(CREATE_NO_WINDOW);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let mut command = command;
+        // Suppress console
+        command.creation_flags(CREATE_NO_WINDOW);
+        Ok(command)
+    }
+    #[cfg(not(target_os = "windows"))]
     Ok(command)
 }
 
