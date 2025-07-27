@@ -1638,9 +1638,9 @@ impl App {
             Message::CheckOutdatedCompleted(outdated) => {
                 return if !outdated.is_empty() {
                     for (id, time) in outdated {
-                        if !self
+                        if self
                             .ongoing_download
-                            .is_some_and(|(ongoing, _)| ongoing == id)
+                            .is_none_or(|(ongoing, _)| ongoing != id)
                             && !self.download_queue.contains_key(&id)
                         {
                             self.pending_queue.insert(id, time);
