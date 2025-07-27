@@ -1271,6 +1271,8 @@ impl App {
                 self.library.items.remove(&id);
             }
             Message::DownloadCancelRequested(id) => {
+                if let Some(_progress) = self.download_queue.remove(&id) {
+                    self.errorred_downloads.insert(id, "Cancelled".to_string());
                 #[cfg(target_os = "linux")]
                 if self.settings.notify_progress
                     && let Some(notif_id) = NOTIF_CACHE.remove(&id)
@@ -1286,9 +1288,6 @@ impl App {
                         .id(notif_id);
                     let _ = notif.show();
                 }
-
-                if let Some(_progress) = self.download_queue.remove(&id) {
-                    self.errorred_downloads.insert(id, "Cancelled".to_string());
                 }
             }
             Message::SteamCMDDownloadRequested(id) => {
@@ -3228,6 +3227,20 @@ impl App {
 
     fn downloads_page(&self) -> Element<'_, Message> {
         let get_details = |(id, size): (&u32, &u64)| -> Element<'_, Message> {
+            let cancel = self
+                .download_queue
+                .iter()
+                .any(|(this, _)| this == id)
+                .then_some(
+                    column![
+                        vertical_space(),
+                        button("Cancel")
+                            .style(button::danger)
+                            .on_press(Message::DownloadCancelRequested(*id)),
+                    ]
+                    .height(50),
+                );
+
             if let Some(details) = self.file_cache.get_details(*id) {
                 let total_size = details.file_size.parse::<u64>().ok().unwrap_or_default();
                 let percent = *size as f32 / total_size as f32 * 100.0;
@@ -3247,20 +3260,16 @@ impl App {
                         ],
                     ]
                     .width(Fill),
-                    button("Cancel")
-                        .style(button::danger)
-                        .on_press(Message::DownloadCancelRequested(*id))
                 ]
+                .push(cancel)
                 .into()
             } else {
                 let displayed_size = files::SizeDisplay::automatic(*size);
                 row![
                     text!("Unknown ({id}) - {displayed_size}"),
                     horizontal_space(),
-                    button("Cancel")
-                        .style(button::danger)
-                        .on_press(Message::DownloadCancelRequested(*id))
                 ]
+                .push(cancel)
                 .into()
             }
         };
