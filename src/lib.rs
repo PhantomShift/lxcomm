@@ -74,7 +74,6 @@ pub mod widgets;
 pub mod xcom_mod;
 
 const XCOM_APPID: u32 = 268500;
-const X2_WOTCCOMMUNITY_HIGHLANDER_ID: u32 = 1134256495;
 
 static APP_STRATEGY_ARGS: LazyLock<AppStrategyArgs> = LazyLock::new(|| AppStrategyArgs {
     author: "phantomshift".to_string(),
@@ -572,12 +571,6 @@ although this will also retry if any other errors occur. Set this to a higher va
     #[reflect(@AppSettingsLabel("Show Download Progress Notification"))]
     notify_progress: bool,
 
-    #[reflect(@AppSettingsLabel("Workshop Update Item Id"))]
-    #[reflect(@AppSettingsDescription(r#"Due to strange steamcmd behavior which does not appear to be addressed anywhere,
-at least one workshop item must be (successfully) downloaded before the "+workshop_status" command works.
-By default, this is set to X2WOTCCommunityHighlander's ID since it is a common dependency."#))]
-    workshop_update_item_id: u32,
-
     #[reflect(@AppSettingsLabel("Reload Profile on Launch"))]
     #[reflect(@AppSettingsDescription("If enabled, automatically sets up the selected active profile."))]
     reload_profile_on_launch: bool,
@@ -616,7 +609,6 @@ impl Default for AppSettings {
             notify_on_download_complete: true,
             notify_with_sound: false,
             notify_progress: false,
-            workshop_update_item_id: X2_WOTCCOMMUNITY_HIGHLANDER_ID,
             reload_profile_on_launch: true,
 
             steamcmd_command_path: Default::default(),
