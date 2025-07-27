@@ -2287,6 +2287,16 @@ impl App {
                     self.steamcmd_state.logout();
                 }
 
+                if let Some(session) = &self.steamcmd_state.session
+                    && !session.is_killed()
+                {
+                    if !session.is_waiting() {
+                        eprintln!("Could not exit SteamCMD cleanly")
+                    } else if let Err(err) = session.send_command("quit") {
+                        eprintln!("Error attempting to cleanly close SteamCMD session: {err:?}")
+                    }
+                }
+
                 let result: Result<()> = try {
                     let file = std::fs::File::create(&*SAVE_PATH)?;
                     serde_json::to_writer_pretty(file, &self.save)?;
