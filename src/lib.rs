@@ -1273,21 +1273,21 @@ impl App {
             Message::DownloadCancelRequested(id) => {
                 if let Some(_progress) = self.download_queue.remove(&id) {
                     self.errorred_downloads.insert(id, "Cancelled".to_string());
-                #[cfg(target_os = "linux")]
-                if self.settings.notify_progress
-                    && let Some(notif_id) = NOTIF_CACHE.remove(&id)
-                    && let Some(details) = self.file_cache.get_details(id)
-                {
-                    let mut notif = notify_rust::Notification::new();
-                    let title = &details.title;
-                    notif
-                        .appname("LXCOMM")
-                        .summary(&format!("{title} Not Downloaded"))
-                        .body("Download was cancelled")
-                        .timeout(-1)
-                        .id(notif_id);
-                    let _ = notif.show();
-                }
+                    #[cfg(target_os = "linux")]
+                    if self.settings.notify_progress
+                        && let Some(notif_id) = NOTIF_CACHE.remove(&id)
+                        && let Some(details) = self.file_cache.get_details(id)
+                    {
+                        let mut notif = notify_rust::Notification::new();
+                        let title = &details.title;
+                        notif
+                            .appname("LXCOMM")
+                            .summary(&format!("{title} Not Downloaded"))
+                            .body("Download was cancelled")
+                            .timeout(-1)
+                            .id(notif_id);
+                        let _ = notif.show();
+                    }
                 }
             }
             Message::SteamCMDDownloadRequested(id) => {
@@ -2573,6 +2573,24 @@ impl App {
                 .then_some(Message::SteamCMDDownloadRequested(id)),
         );
 
+        let tags = if let Some(item) = self.library.items.get(&id) {
+            let metadata = self.file_cache.get_metadata(&item.path);
+            println!("Metadata: {metadata:?}");
+            &mut metadata.tags.into_iter() as &mut dyn Iterator<Item = metadata::Tag>
+        } else {
+            &mut file
+                .tags
+                .iter()
+                .map(|tag| metadata::Tag::from(tag.tag.as_str()))
+                as &mut dyn Iterator<Item = metadata::Tag>
+        };
+        let tags = tags
+            .map(|tag| {
+                println!("Tag: {tag}");
+                Element::new(iced_aw::badge(text(tag.to_string())))
+            })
+            .collect::<Vec<_>>();
+
         container(
             container(column![
                 row![
@@ -2632,6 +2650,11 @@ impl App {
                                 .style(button::danger)
                                 .on_press(Message::DeleteRequested(id))
                         )
+                    )
+                    .push(
+                        tags.is_empty()
+                            .not()
+                            .then_some(column![text("Tags"), row(tags).spacing(8).wrap()])
                     ),
                 ],
                 column![
@@ -3672,6 +3695,20 @@ impl App {
         }
 
         for (id, path) in self.downloaded.iter() {
+            if let Some(details) = self.file_cache.get_details(*id) {
+                // Raw read
+                let mut metadata = metadata::read_in(path).unwrap_or_default();
+                metadata.tags.extend(
+                    details
+                        .tags
+                        .iter()
+                        .map(|tag| metadata::Tag::from(tag.tag.as_ref())),
+                );
+                if let Err(err) = self.file_cache.update_metadata(path, metadata) {
+                    eprintln!("Error updating metadata for {id}: {err:?}");
+                }
+            }
+
             if let Some(item) = self.library.items.get_mut(id) {
                 item.path = path.clone();
             } else if let Some(details) = self.file_cache.get_details(*id) {

@@ -17,12 +17,14 @@ use itertools::{EitherOrBoth, Itertools};
 use notify::Watcher;
 use steam_rs::published_file_service::query_files;
 
+use moka::sync::Cache as MokaCache;
+
 #[cfg(target_os = "windows")]
 use notify::PollWatcher as PlatformWatcher;
 #[cfg(not(target_os = "windows"))]
 use notify::RecommendedWatcher as PlatformWatcher;
 
-use crate::{DATA_DIR, Message, XCOM_APPID};
+use crate::{DATA_DIR, Message, XCOM_APPID, metadata};
 
 const KILO: u64 = 1024;
 const MEGA: u64 = 1024 * 1024;
@@ -184,7 +186,8 @@ impl Display for SizeDisplay {
 
 #[derive(Debug, Clone)]
 pub struct Cache {
-    details_cache: moka::sync::Cache<u32, Arc<steam_rs::published_file_service::query_files::File>>,
+    details_cache: MokaCache<u32, Arc<steam_rs::published_file_service::query_files::File>>,
+    metadata_cache: MokaCache<PathBuf, metadata::ProgramMetadata>,
 }
 
 impl Cache {
@@ -217,12 +220,30 @@ impl Cache {
             }
         })
     }
+
+    pub fn update_metadata<P: AsRef<Path>>(
+        &self,
+        path: P,
+        data: metadata::ProgramMetadata,
+    ) -> Result<(), eyre::Error> {
+        data.save_in(path.as_ref())?;
+        self.metadata_cache
+            .insert(path.as_ref().to_path_buf(), data);
+        Ok(())
+    }
+
+    pub fn get_metadata<P: AsRef<Path>>(&self, path: P) -> metadata::ProgramMetadata {
+        self.metadata_cache.get_with_by_ref(path.as_ref(), || {
+            metadata::read_in(path.as_ref()).unwrap_or_default()
+        })
+    }
 }
 
 impl Default for Cache {
     fn default() -> Self {
         Self {
-            details_cache: moka::sync::Cache::new(1024),
+            details_cache: MokaCache::new(1024),
+            metadata_cache: MokaCache::new(1024),
         }
     }
 }

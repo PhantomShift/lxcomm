@@ -18,6 +18,7 @@ use iced::{
     futures::{SinkExt, Stream, StreamExt},
     widget::{Container, container, image},
 };
+use serde::{Deserialize, Serialize};
 use steam_rs::{
     Steam,
     published_file_service::{
@@ -271,7 +272,19 @@ pub fn resolve_all_dependencies_blocking(
 
 /// XCOM2 Workshop item tags. This is assumed to be a static list.
 #[derive(
-    Debug, Clone, Copy, strum::Display, Hash, PartialEq, Eq, PartialOrd, Ord, VariantArray,
+    Debug,
+    Clone,
+    Copy,
+    strum::Display,
+    Hash,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    VariantArray,
+    strum::AsRefStr,
+    Serialize,
+    Deserialize,
 )]
 pub enum XCOM2WorkshopTag {
     #[strum(to_string = "War of the Chosen")]

@@ -22,7 +22,7 @@ use secrecy::{ExposeSecret, SecretString};
 use crate::{
     Message, XCOM_APPID,
     files::{self, Cache},
-    metadata::ProgramMetadata,
+    metadata::{self, ProgramMetadata},
     steam_manifest::{AppWorkshopManifest, ManifestWorkshopItem, ManifestWorkshopItemDetails},
 };
 
@@ -621,12 +621,13 @@ impl State {
             drop(report_handle);
 
             let path = files::get_item_directory(&self.download_dir, id);
-            let last_updated = std::time::SystemTime::now()
+            let time_downloaded = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("now should always be greater than unix epoch")
                 .as_secs();
             let metadata = ProgramMetadata {
-                time_downloaded: last_updated,
+                time_downloaded,
+                ..metadata::read_in(&path).unwrap_or_default()
             };
             if let Err(err) = metadata.save_in(path) {
                 eprintln!("Error writing LXCOMM metadata for {id}: {err:?}");

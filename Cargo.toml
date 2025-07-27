@@ -72,7 +72,7 @@ features = ["syntect-default-fancy"]
 [dependencies.iced_aw]
 version = "0.13.0-dev"
 default-features = false
-features = ["card", "grid", "labeled_frame", "number_input", "spinner", "drop_down"]
+features = ["card", "grid", "labeled_frame", "number_input", "spinner", "drop_down", "badge"]
 git = "https://github.com/phantomshift/iced_aw"
 branch = "redhawk-more-highlights"
 
