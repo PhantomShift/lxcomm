@@ -8,6 +8,8 @@ use std::{
 };
 
 use bstr::ByteSlice;
+use derivative::Derivative;
+use governor::DefaultDirectRateLimiter;
 use iced::futures::{SinkExt, Stream, StreamExt, channel::mpsc::Sender};
 use itertools::Itertools;
 use steam_rs::published_file_service::query_files::File;
@@ -474,7 +476,8 @@ async fn steamcmd_persistent() -> eyre::Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone, Derivative)]
+#[derivative(Default)]
 pub struct State {
     pub username: String,
     pub password: SecretString,
@@ -483,6 +486,14 @@ pub struct State {
     pub is_cached: bool,
     pub session: Option<Session>,
     pub message_sender: Option<Sender<Message>>,
+    #[derivative(Default(value = "Arc::new(download_ratelimiter())"))]
+    pub rate_limit: Arc<DefaultDirectRateLimiter>,
+}
+
+fn download_ratelimiter() -> DefaultDirectRateLimiter {
+    governor::DefaultDirectRateLimiter::direct(governor::Quota::per_minute(unsafe {
+        std::num::NonZeroU32::new_unchecked(10)
+    }))
 }
 
 pub fn which_steamcmd(given: &Option<PathBuf>) -> Result<PathBuf, Error> {
@@ -586,7 +597,7 @@ impl State {
                     }
                 }));
 
-            drop(report_handle);
+            self.rate_limit.until_ready().await;
 
             if let err @ Err(_) = session
                 .workshop_download_item(XCOM_APPID as u64, id as u64)
@@ -606,6 +617,8 @@ impl State {
 
                 err?
             };
+
+            drop(report_handle);
 
             let path = files::get_item_directory(&self.download_dir, id);
             let last_updated = std::time::SystemTime::now()
