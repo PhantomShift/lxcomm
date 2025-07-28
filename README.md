@@ -16,7 +16,7 @@ Before getting into the guide proper, I want to get out of the way all the **cav
 users should be aware of coming into using LXCOMM:
 
 1) **If you're on Windows, use [Alternative Mod Launcher](https://github.com/X2CommunityCore/xcom2-launcher) (AML).** Although I have actually written the project to be usable on both Linux and Windows where possible, Linux is very much the focus of this project with Windows seeing minimal viable support.
-Additionally, the project makes extensive use of symlinks which means you must run LXCOMM as administrator, run Windows in developer mode or go through the annoying procecss of enabling symlinks (Windows non-Home only, unless you're a wizard or something).
+Additionally, the project makes extensive use of symlinks which means you must run LXCOMM as administrator, run Windows in developer mode or go through the annoying process of enabling symlinks (Windows non-Home only, unless you're a wizard or something).
 2) **If you're not on Windows, use AML.** AML is a much more mature project with a large backing by the community. Although the inconvenience of setting it up on Linux
 for a non-Steam installation was why I started writing this project in the first place,
 it is still possible to set up and is still the ***best*** solution for mod management in XCOM2.
@@ -80,9 +80,6 @@ Ongoing downloads can be tracked at the `Downloads` tab at the top, which shows
 ongoing, queued, completed and errored downloads, in that order.
 If you find that downloads fail frequently (this is largely an issue with *large* mods),
 you may want to change the `Automatic Download Retries` setting.
-At your own discretion, you may also turn up `Simultaneous Downloads`,
-though I cannot claim that the process is stable.
-One download at a time usually saturates my network when downloading.
 
 Once a download has completed, you'll see your new mod populate your library in the `Library` page.
 This page contains *all* mods that you've downloaded through LXCOMM (support for local mods pending).
@@ -155,7 +152,7 @@ In no particular order:
 - [x] Text editor + diffing for per-profile mod ini settings
 - [x] On detailed view open, resolve unknown dependencies in the background
 - [x] Filter library with option for [fuzzy finding](https://github.com/Blakeinstein/fuse-rust)
-- [ ] (Blocked on [#1](https://github.com/PhantomShift/lxcomm/issues/1)) Check for updates without having to invoke downloads on all mods (build manifest file from scratch and then try running `steamcmd +workshop_status`?)
+- [x] ~~(Blocked on [#1](https://github.com/PhantomShift/lxcomm/issues/1)) Check for updates without having to invoke downloads on all mods (build manifest file from scratch and then try running `steamcmd +workshop_status`?)~~ Updates are now checked via the Steam Web API.
 - [x] Automatically find game installations and folders (using [walkdir](https://github.com/BurntSushi/walkdir)?)
 - [x] Options for ranking search results in browsing
 - [ ] Per-profile character pools
@@ -166,7 +163,6 @@ In no particular order:
 - [ ] Copying/imporing+exporting profiles
 - [ ] Disk cache trimming
 - [x] ~~Ability to enter workshop ID directly for browsing or downloading (due to unreliable browsing results)~~ Search results should now be all-inclusive
-- [ ] Ability to pause downloads
 - [ ] Investigate controller navigation in iced (or libcosmic) (for the Steam Deck gamers)
 
 ## License
