@@ -2274,19 +2274,40 @@ impl App {
                     eprintln!("Error deleting api key entry: {err:?}");
                 }
 
-                if self.settings.steamcmd_logout_on_exit {
-                    self.steamcmd_state.logout();
-                }
+                let logout_task = if self.settings.steamcmd_logout_on_exit
+                    && let Some(session) = self.steamcmd_state.session.clone()
+                    && session.is_logged_in()
+                {
+                    Task::future(async move {
+                        if session.is_waiting()
+                            && let Err(err) = session.log_out().await
+                        {
+                            eprintln!("Error logging out of SteamCMD: {err:?}");
+                        }
+                        Message::None
+                    })
+                } else {
+                    Task::none()
+                };
 
-                if let Some(session) = &self.steamcmd_state.session
+                let quit_task = if let Some(session) = self.steamcmd_state.session.clone()
                     && !session.is_killed()
                 {
-                    if !session.is_waiting() {
-                        eprintln!("Could not exit SteamCMD cleanly")
-                    } else if let Err(err) = session.send_command("quit") {
-                        eprintln!("Error attempting to cleanly close SteamCMD session: {err:?}")
-                    }
-                }
+                    Task::future(async move {
+                        if session.is_waiting() {
+                            if let Err(err) = session.quit().await {
+                                eprintln!("Error exiting SteamCMD session: {err:?}");
+                            }
+                        } else {
+                            eprintln!(
+                                "Could not exit SteamCMD cleanly, an operation is still ongoing..."
+                            )
+                        }
+                        Message::None
+                    })
+                } else {
+                    Task::none()
+                };
 
                 let result: Result<()> = try {
                     let file = std::fs::File::create(&*SAVE_PATH)?;
@@ -2296,7 +2317,10 @@ impl App {
                     eprintln!("Error saving application data: {err:?}");
                 }
 
-                return iced::window::get_oldest().and_then(iced::window::close);
+                return Task::done(Message::SetBusyMessage("Shutting down...".to_string()))
+                    .chain(logout_task)
+                    .chain(quit_task)
+                    .chain(iced::window::get_oldest().and_then(iced::window::close));
             }
             Message::LoggingSetup(sender) => {
                 println!("Logging should be set up...");
