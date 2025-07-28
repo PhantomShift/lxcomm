@@ -231,6 +231,7 @@ impl Session {
                             .next()
                     }
 
+                    // Potential TODO - Ensure these are found in correct order (search for all 3 at the same time)
                     while let Some(mut index) = scratch
                         .find_byteset(b"\r\n")
                         .or(find_cursor_reposition(&scratch))
@@ -496,7 +497,7 @@ async fn steamcmd_persistent() -> eyre::Result<()> {
     let session = Session::init(None)?;
 
     let mut lines = session.lines();
-    let output_handle = tokio::spawn(async move {
+    let _output_handle = tokio::spawn(async move {
         while let Some(line) = lines.next().await {
             println!("[SteamCMD] {line}");
         }
