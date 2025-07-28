@@ -57,7 +57,7 @@ governor = "0.10.0"
 portable-pty = "0.8.1"
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
-iced_fonts = { git = "https://github.com/Redhawk18/iced_fonts.git", version = "0.2.0", features = ["fontawesome"], rev = "982eb5a" }
+iced_fonts = { git = "https://github.com/Redhawk18/iced_fonts.git", version = "0.2.0", features = ["fontawesome"], rev = "982eb5ac9a02629cc9af824e3816376e4f52fc03" }
 
 
 [dependencies.iced]

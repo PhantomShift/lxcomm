@@ -2389,7 +2389,7 @@ source = "git+https://github.com/phantomshift/iced_aw?branch=redhawk-more-highli
 dependencies = [
  "cfg-if",
  "iced",
- "iced_fonts 0.2.0 (git+https://github.com/Redhawk18/iced_fonts.git?rev=982eb5ac9a02629cc9af824e3816376e4f52fc03)",
+ "iced_fonts",
  "itertools 0.14.0",
  "num-format",
  "num-traits",
@@ -2427,32 +2427,11 @@ dependencies = [
 [[package]]
 name = "iced_fonts"
 version = "0.2.0"
-source = "git+https://github.com/Redhawk18/iced_fonts.git?rev=982eb5a#982eb5ac9a02629cc9af824e3816376e4f52fc03"
-dependencies = [
- "iced_core",
- "iced_fonts_macros 0.2.0 (git+https://github.com/Redhawk18/iced_fonts.git?rev=982eb5a)",
- "iced_widget",
-]
-
-[[package]]
-name = "iced_fonts"
-version = "0.2.0"
 source = "git+https://github.com/Redhawk18/iced_fonts.git?rev=982eb5ac9a02629cc9af824e3816376e4f52fc03#982eb5ac9a02629cc9af824e3816376e4f52fc03"
 dependencies = [
  "iced_core",
- "iced_fonts_macros 0.2.0 (git+https://github.com/Redhawk18/iced_fonts.git?rev=982eb5ac9a02629cc9af824e3816376e4f52fc03)",
+ "iced_fonts_macros",
  "iced_widget",
-]
-
-[[package]]
-name = "iced_fonts_macros"
-version = "0.2.0"
-source = "git+https://github.com/Redhawk18/iced_fonts.git?rev=982eb5a#982eb5ac9a02629cc9af824e3816376e4f52fc03"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.104",
- "ttf-parser 0.25.1",
 ]
 
 [[package]]
@@ -3234,7 +3213,7 @@ dependencies = [
  "humantime",
  "iced",
  "iced_aw",
- "iced_fonts 0.2.0 (git+https://github.com/Redhawk18/iced_fonts.git?rev=982eb5a)",
+ "iced_fonts",
  "iced_highlighter",
  "indoc",
  "itertools 0.14.0",
