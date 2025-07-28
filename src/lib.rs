@@ -3843,7 +3843,7 @@ impl iced::advanced::subscription::Recipe for ConnectionRecipe {
         _input: iced::advanced::subscription::EventStream,
     ) -> iced::advanced::graphics::futures::BoxStream<Self::Output> {
         let connection = zbus::Connection::from(self.0);
-        Box::pin(stream::channel(
+        Box::pin(iced::stream::channel(
             100,
             |mut output: Sender<Message>| async move {
                 match connection
