@@ -134,7 +134,8 @@ pub enum SessionError {
     Killed,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Derivative, Clone)]
+#[derivative(Debug)]
 pub struct Session {
     buffer: Arc<Mutex<VecDeque<String>>>,
     request_sender: std::sync::mpsc::Sender<String>,
@@ -144,6 +145,10 @@ pub struct Session {
     killed: Arc<AtomicBool>,
     _child: Arc<dyn portable_pty::Child + Send + Sync>,
     _handles: Arc<[std::thread::JoinHandle<()>]>,
+    // Supposedly "some platforms" don't like
+    // if this is dropped before the child process
+    #[derivative(Debug = "ignore")]
+    _master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
 }
 
 impl Session {
@@ -168,8 +173,6 @@ impl Session {
         drop(slave);
         let mut writer = master.take_writer()?;
         let reader = master.try_clone_reader()?;
-        // Hopefully don't need either it once we have the reader?
-        drop(master);
 
         let buffer = Arc::new(Mutex::new(VecDeque::new()));
         let killed = Arc::new(AtomicBool::new(false));
@@ -188,26 +191,71 @@ impl Session {
                     let count = read.len();
                     scratch.extend_from_slice(read);
                     buf_reader.consume(count);
-                    while let Some(mut index) = scratch.find_byteset(b"\r\n") {
+
+                    // Tiny state machine because for some reason Valve
+                    // sometimes decides to use ANSI escapes to move the terminal
+                    // cursor to a new line instead of just... outputting a new line.
+                    fn find_cursor_reposition(buffer: &[u8]) -> Option<usize> {
+                        buffer
+                            .as_bstr()
+                            .find_iter(b"\x1b[")
+                            .filter_map(|index| {
+                                macro_rules! ensure {
+                                    ($expression:expr) => {
+                                        if !($expression) {
+                                            return None;
+                                        }
+                                    };
+                                }
+
+                                let sub = &buffer[index + b"\x1b[".len()..];
+                                let mut len = 0;
+                                let mut bytes = sub.bytes().peekable();
+                                ensure!(bytes.next()?.is_ascii_digit());
+                                len += 1;
+                                while bytes.next_if(u8::is_ascii_digit).is_some() {
+                                    len += 1;
+                                }
+                                ensure!(bytes.next()? == b';');
+                                len += 1;
+                                ensure!(bytes.next()?.is_ascii_digit());
+                                len += 1;
+                                while bytes.next_if(u8::is_ascii_digit).is_some() {
+                                    len += 1;
+                                }
+                                ensure!(bytes.next()? == b'H');
+                                len += 1;
+
+                                Some(index + len + 1)
+                            })
+                            .next()
+                    }
+
+                    while let Some(mut index) = scratch
+                        .find_byteset(b"\r\n")
+                        .or(find_cursor_reposition(&scratch))
+                    {
                         let to_consume = index;
                         if scratch[index] == b'\r' && scratch.get(index + 1) == Some(&b'\n') {
                             index += 1;
                         }
                         let drain = scratch.drain(..=index);
-                        if waiting.load(std::sync::atomic::Ordering::Relaxed) {
-                            // The next line is "Steam>" + something we inputted, ignore it
-                            waiting.store(false, std::sync::atomic::Ordering::Relaxed);
-                            continue;
-                        }
                         // Lossy conversion because I don't feel like telling Steam what to do.
                         let line =
                             strip_ansi_escapes::strip(Vec::from_iter(drain.take(to_consume)))
                                 .as_bstr()
                                 .to_string();
-                        buffer.blocking_lock().push_back(line.clone());
-                        let _ = event_sender.send(SessionEvent::Line(line));
+                        // Skip command lines (redundancy + privacy reasons)
+                        if !line.starts_with("Steam>") {
+                            buffer.blocking_lock().push_back(line.clone());
+                            let _ = event_sender.send(SessionEvent::Line(line));
+                        }
                     }
-                    if count > 0 && scratch.ends_with_str("Steam>\x1b[0m") {
+                    if count > 0
+                        && (scratch.ends_with_str("Steam>\x1b[0m")
+                            || scratch.ends_with_str("Steam>\x1b[?25h")
+                            || scratch.ends_with_str("Steam>"))
+                    {
                         waiting.store(true, std::sync::atomic::Ordering::Relaxed);
                         let _ = event_sender.send(SessionEvent::Waiting);
                     } else {
@@ -241,6 +289,7 @@ impl Session {
             killed,
             _child: Arc::from(child),
             _handles: Arc::new([reader_handle, writer_handle]),
+            _master: Arc::new(Mutex::new(master)),
         };
 
         Ok(session)
@@ -302,25 +351,24 @@ impl Session {
             }
         }
     }
-    pub fn lines(&self) -> impl Stream<Item = String> {
-        iced::futures::stream::unfold(
-            (self.event_receiver.resubscribe(), self.killed.clone()),
-            |(mut receiver, killed)| {
-                Box::pin(async {
-                    loop {
-                        if killed.load(std::sync::atomic::Ordering::Relaxed) {
-                            return None;
-                        }
-                        match receiver.recv().await {
-                            Ok(SessionEvent::Line(line)) => break Some((line, (receiver, killed))),
-                            Ok(SessionEvent::Shutdown) => break None,
-                            Err(broadcast::error::RecvError::Closed) => break None,
-                            _ => {}
-                        }
+    pub fn lines(&self) -> impl Stream<Item = String> + use<> {
+        let rec = self.event_receiver.resubscribe();
+        let killed = self.killed.clone();
+        iced::futures::stream::unfold((rec, killed), |(mut receiver, killed)| {
+            Box::pin(async {
+                loop {
+                    if killed.load(std::sync::atomic::Ordering::Relaxed) {
+                        return None;
                     }
-                })
-            },
-        )
+                    match receiver.recv().await {
+                        Ok(SessionEvent::Line(line)) => break Some((line, (receiver, killed))),
+                        Ok(SessionEvent::Shutdown) => break None,
+                        Err(broadcast::error::RecvError::Closed) => break None,
+                        _ => {}
+                    }
+                }
+            })
+        })
     }
 
     pub fn buffer_empty(&self) -> bool {
@@ -429,7 +477,6 @@ impl Session {
             if line.starts_with("ERROR!") {
                 return Err(Error::Message(line));
             } else if line.starts_with("Success") {
-                dbg!(line);
                 return Ok(());
             }
         }
@@ -447,28 +494,36 @@ impl Session {
 #[tokio::test]
 async fn steamcmd_persistent() -> eyre::Result<()> {
     let session = Session::init(None)?;
+
+    let mut lines = session.lines();
+    let output_handle = tokio::spawn(async move {
+        while let Some(line) = lines.next().await {
+            println!("[SteamCMD] {line}");
+        }
+    });
+
     session.skip_boot().await;
-    println!("Getting commands");
+    println!("[Test] Getting commands");
     let commands = session.find("workshop").await?;
-    println!("Commands:\n{commands}");
+    println!("[Test] Commands:\n{commands}");
 
     let temp_dir = std::env::temp_dir();
-    println!("Setting install directory to {}", temp_dir.display());
+    println!("[Test] Setting install directory to {}", temp_dir.display());
     session.force_install_dir(temp_dir).await?;
 
-    println!("Logging in");
+    println!("[Test] Logging in");
     session.log_in_cached("anonymous").await?;
 
-    println!("Downloading a mod that can be downloaded anonymously...");
+    println!("[Test] Downloading a mod that can be downloaded anonymously...");
     const BATTLE_ZONE_ID: u64 = 301650;
     const MOD_ID: u64 = 2829669454;
     session
         .workshop_download_item(BATTLE_ZONE_ID, MOD_ID)
         .await?;
 
-    println!("Logging out");
+    println!("[Test] Logging out");
     session.log_out().await?;
-    println!("Quitting");
+    println!("[Test] Quitting");
     session.quit().await?;
 
     drop(session);

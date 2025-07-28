@@ -47,11 +47,14 @@ notify-rust = "4.11.7"
 fancy-regex = "*"
 toml = "0.9.2"
 chrono = "0.4.41"
-portable-pty = "0.9.0"
 anyhow = "1.0.98"
 single-instance = "0.3.3"
 zbus = { version = "5.7.1", optional = true }
 governor = "0.10.0"
+# Downgraded due to this change 9.0 which complicates use on Windows
+# https://github.com/wezterm/wezterm/commit/9d83458632640e662e3bac6d1d693e4a0cad6e2a
+# Changes to portable-pty as a whole since 0.8.1 seem largely inconsequential
+portable-pty = "0.8.1"
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 iced_fonts = { git = "https://github.com/Redhawk18/iced_fonts.git", version = "0.2.0", features = ["fontawesome"], rev = "982eb5a" }
