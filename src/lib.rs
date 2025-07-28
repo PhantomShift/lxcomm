@@ -3580,7 +3580,7 @@ impl App {
             iced::advanced::subscription::from_recipe(ConnectionRecipe(
                 self.dbus_connection.clone(),
             )),
-            // iced::Subscription::run(steamcmd::setup_logging),
+            iced::Subscription::run(steamcmd::setup_logging),
             iced::Subscription::run(web::setup_background_resolver),
             // Need to consider how to handle the downloads directory not existing yet
             // iced::advanced::subscription::from_recipe(files::WatcherRecipe(
