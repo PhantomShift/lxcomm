@@ -2172,7 +2172,7 @@ impl App {
                 } else {
                     Task::done(Message::DisplayError(
                         "Missing Command".to_string(),
-                        "No command has been set set.".to_string(),
+                        "No command has been set.".to_string(),
                     ))
                 };
             }
