@@ -242,12 +242,15 @@ impl Session {
                         }
                         let drain = scratch.drain(..=index);
                         // Lossy conversion because I don't feel like telling Steam what to do.
-                        let line =
+                        let mut line =
                             strip_ansi_escapes::strip(Vec::from_iter(drain.take(to_consume)))
                                 .as_bstr()
                                 .to_string();
                         // Skip command lines (redundancy + privacy reasons)
                         if !line.starts_with("Steam>") {
+                            if line.starts_with("login") {
+                                line.replace_range("login".len().., " [REDACTED]");
+                            }
                             buffer.blocking_lock().push_back(line.clone());
                             let _ = event_sender.send(SessionEvent::Line(line));
                         }
