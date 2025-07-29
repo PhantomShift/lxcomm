@@ -247,25 +247,40 @@ pub fn link_profile_local_files<L: AsRef<Path>>(
     profile: &Profile,
     local_path: L,
 ) -> Result<(), std::io::Error> {
-    // Validate that this is actually inside the documents folder
-    let mut search = local_path.as_ref().components();
-    let mut validate_has = |name: &'static str| {
-        search
-            .find(|comp| comp.as_os_str().eq_ignore_ascii_case(name))
-            .ok_or(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!(
-                    "did not find '{name}' in given local path, it is unlikely the game points here"
-                ),
-            ))
-    };
-    validate_has("Documents")?;
-    validate_has("My Games")?;
-
-    if !local_path.as_ref().exists() {
-        eprintln!("Local directory doesn't appear to exist, creating it from scratch...");
-        std::fs::create_dir_all(local_path.as_ref())?;
+    // Validate that this is actually the game's local documents folder
+    macro_rules! ensure {
+        ($expression:expr, $msg:expr$(,)*) => {
+            if !($expression) {
+                return Err(std::io::Error::new(std::io::ErrorKind::NotFound, $msg));
+            };
+        };
     }
+    let path_display = local_path.as_ref().display();
+    ensure!(
+        local_path
+            .as_ref()
+            .file_name()
+            .is_some_and(|name| name == "XComGame"),
+        format!(
+            "{path_display} does not end with 'XComGame', this does not appear to be to be the save folder",
+        ),
+    );
+    ensure!(
+        local_path.as_ref().join("Config").exists(),
+        format!(
+            "cannot find 'Config' folder in {path_display}, please launch the game at least once if this is the correct folder"
+        )
+    );
+    ensure!(
+        local_path.as_ref().join("Logs").exists(),
+        format!(
+            "cannot find 'Logs' folder in {path_display}, please launch the game at least once if this is the correct folder"
+        )
+    );
+    ensure!(
+        local_path.as_ref().exists(),
+        format!("could not find or read {path_display}")
+    );
 
     let save_path = local_path.as_ref().join("SaveData");
 
