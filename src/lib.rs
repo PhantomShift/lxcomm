@@ -254,6 +254,7 @@ pub enum Message {
     SetPage(AppPage),
     SetBusy(bool),
     SetBusyMessage(String),
+    ModifyBusyMessage(String),
     DisplayError(String, String),
     OpenModal(Arc<AppModal>),
     CloseModal,
@@ -1092,6 +1093,11 @@ impl App {
             Message::SetBusyMessage(message) => {
                 self.modal_stack.push(AppModal::BusyMessage(message));
             }
+            Message::ModifyBusyMessage(message) => {
+                if let Some(AppModal::BusyMessage(current)) = self.modal_stack.last_mut() {
+                    *current = message;
+                }
+            }
             Message::SetBusy(busy) => {
                 if busy {
                     self.modal_stack.push(AppModal::Busy);
@@ -1206,7 +1212,42 @@ impl App {
                     .push(AppModal::BusyMessage("Logging into SteamCMD...".into()));
                 let state = self.steamcmd_state.clone();
                 return Task::perform(
-                    async move { state.attempt_cached_login().await },
+                    async move {
+                        let handle = if let Some(mut sender) = state.message_sender.clone()
+                            && let Some(mut lines) =
+                                state.session.as_ref().map(|session| session.lines())
+                        {
+                            Some(tokio_util::task::AbortOnDropHandle::new(tokio::spawn(
+                                async move {
+                                    while let Some(line) = lines.next().await {
+                                        static MATCH_STEAMCMD_UPDATE_PROG: LazyLock<
+                                            fancy_regex::Regex,
+                                        > = LazyLock::new(|| {
+                                            fancy_regex::Regex::new("\\[....\\]")
+                                                .expect("regex should be valid")
+                                        });
+                                        if MATCH_STEAMCMD_UPDATE_PROG
+                                            .find(&line)
+                                            .ok()
+                                            .flatten()
+                                            .is_some()
+                                        {
+                                            let _ = sender
+                                                .send(Message::ModifyBusyMessage(format!(
+                                                    "SteamCMD is updating...\n{line}"
+                                                )))
+                                                .await;
+                                        }
+                                    }
+                                },
+                            )))
+                        } else {
+                            None
+                        };
+                        let result = state.attempt_cached_login().await;
+                        drop(handle);
+                        result
+                    },
                     move |result| {
                         if let Err(e) = result {
                             match e {
