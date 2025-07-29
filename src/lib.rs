@@ -544,11 +544,16 @@ struct AppSettingsConflicts(Vec<&'static str>);
 #[derive(Debug, Reflect)]
 struct AppSettingsTimePreview;
 
+/// Indicates that a setting cannot be changed in a flatpak context.
+#[derive(Debug, Reflect)]
+struct AppSettingsFlatpakLocked;
+
 #[derive(Debug, Reflect, PartialEq, Serialize, Deserialize, Clone)]
 #[serde(default)]
 struct AppSettings {
     #[reflect(@AppSettingsLabel("Download Directory"))]
     #[reflect(@AppSettingsDescription("Note: Already downloaded files are not automatically moved if you change this value."))]
+    #[reflect(@AppSettingsFlatpakLocked)]
     download_directory: String,
 
     #[reflect(@AppSettingsLabel("Automatic Download Retries"))]
@@ -578,6 +583,7 @@ although this will also retry if any other errors occur. Set this to a higher va
 
     #[reflect(@AppSettingsLabel("steamcmd: Command Path"))]
     #[reflect(@AppSettingsDescription(r#"If empty (default), attempts to find it in your path using 'which "steamcmd"'"#))]
+    #[reflect(@AppSettingsFlatpakLocked)]
     steamcmd_command_path: String,
     #[reflect(@AppSettingsLabel("steamcmd: Login On Startup"))]
     steamcmd_login_on_startup: bool,
@@ -642,7 +648,7 @@ impl App {
         let steam_web_api_entry = keyring::Entry::new("lxcomm-steam", "steam-web-api")?;
         let steam_password_entry = keyring::Entry::new("lxcomm-steam", "steam-password")?;
 
-        let settings = if let Ok(true) = SETTINGS_PATH.try_exists()
+        let mut settings = if let Ok(true) = SETTINGS_PATH.try_exists()
             && let Ok(file) = std::fs::File::open(&*SETTINGS_PATH)
             && let Ok(settings) = serde_json::from_reader(file)
         {
@@ -688,6 +694,12 @@ impl App {
 
         let active_profile_combo =
             combo_box::State::new(save.profiles.values().map(|p| p.name.clone()).collect());
+
+        #[cfg(feature = "flatpak")]
+        {
+            settings.download_directory = AppSettings::default().download_directory;
+            settings.steamcmd_command_path = String::from("/app/bin/steamcmd");
+        }
 
         let mut app = App {
             #[cfg(feature = "dbus")]
@@ -2818,6 +2830,8 @@ impl App {
                 tooltip::Position::Bottom,
             )
             .into();
+            let can_edit = !(cfg!(feature = "flatpak")
+                && field.get_attribute::<AppSettingsFlatpakLocked>().is_some());
 
             let editor = match field
                 .get_attribute::<AppSettingEditor>()
@@ -2838,7 +2852,7 @@ impl App {
                         .expect("string input should only be set for string values"),
                 )
                 .width(600)
-                .on_input(|new| AppSettingEdit::String(name, new).into())
+                .on_input_maybe(can_edit.then_some(|new| AppSettingEdit::String(name, new).into()))
                 .into(),
                 AppSettingEditor::SecretInput => text_input(
                     "unset",
@@ -2848,7 +2862,7 @@ impl App {
                 )
                 .secure(true)
                 .width(600)
-                .on_input(|new| AppSettingEdit::Secret(name, new).into())
+                .on_input_maybe(can_edit.then_some(|new| AppSettingEdit::Secret(name, new).into()))
                 .into(),
                 AppSettingEditor::BoolToggle => container(
                     widget::toggler(
@@ -2856,7 +2870,9 @@ impl App {
                             .get_field::<bool>(name)
                             .expect("bool toggle should only be set for bool values"),
                     )
-                    .on_toggle(|toggled| AppSettingEdit::Bool(name, toggled).into()),
+                    .on_toggle_maybe(
+                        can_edit.then_some(|toggled| AppSettingEdit::Bool(name, toggled).into()),
+                    ),
                 )
                 .center_y(Fill)
                 .into(),
@@ -2871,7 +2887,9 @@ impl App {
                         .apply(|range| range.min..=range.max);
 
                     let editor = iced_aw::number_input(value, bounds, |_| Message::None)
-                        .on_input(|new| AppSettingEdit::Number(name, new).into())
+                        .on_input_maybe(
+                            can_edit.then_some(|new| AppSettingEdit::Number(name, new).into()),
+                        )
                         .width(200);
 
                     if field.get_attribute::<AppSettingsTimePreview>().is_some() {
@@ -3007,7 +3025,7 @@ impl App {
                                 .map(|p| p.display().to_string())
                                 .unwrap_or_default()
                         )
-                        .on_input(|s| Message::LoadSetGameDirectory(PathBuf::from(s))),
+                        .on_input_maybe(cfg!(not(feature = "flatpak")).then_some(|s| Message::LoadSetGameDirectory(PathBuf::from(s)))),
                     ],
                 ),
                 LabeledFrame::new("Local Directory",
@@ -3026,7 +3044,8 @@ impl App {
                                     .as_ref()
                                     .map(|p| p.display().to_string())
                                     .unwrap_or_default()
-                            ).on_input(|s| Message::LoadSetLocalDirectory(PathBuf::from(s))),
+                            )
+                            .on_input_maybe(cfg!(not(feature = "flatpak")).then_some(|s| Message::LoadSetLocalDirectory(PathBuf::from(s)))),
                             container("This is the path where the game expects find your local data (e.g. saves). Files/folders that are modified will have backups automatically created."),
                         ),
                     ],

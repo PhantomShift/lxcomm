@@ -1,0 +1,101 @@
+{
+    "$schema": "https://raw.githubusercontent.com/flatpak/flatpak-builder/refs/heads/main/data/flatpak-manifest.schema.json",
+    "id": "io.github.phantomshift.lxcomm",
+    "runtime": "org.freedesktop.Platform",
+    "runtime-version": "24.08",
+    "sdk": "org.freedesktop.Sdk",
+    "sdk-extensions": [
+        "org.freedesktop.Sdk.Extension.rust-nightly"
+    ],
+    "add-extensions": {
+        "org.freedesktop.Platform.Compat.i386": {
+            "directory": "lib/i386-linux-gnu",
+            "version": "24.08"
+        }
+    },
+    "command": "lxcomm",
+    "finish-args": [
+        "--share=ipc",
+        "--share=network",
+        "--socket=wayland",
+        "--socket=fallback-x11",
+        "--talk-name=org.freedesktop.Notifications",
+        "--talk-name=org.freedesktop.secrets",
+        "--allow=multiarch"
+    ],
+    "build-options": {
+        "append-path": "/usr/lib/sdk/rust-nightly/bin"
+    },
+    "modules": [
+        {
+            "name": "compat 32-bit",
+            "buildsystem": "simple",
+            "build-commands": [
+                "mkdir -p /app/lib/i386-linux-gnu",
+                "install -Dm644 ld.so.conf /app/etc/ld.so.conf"
+            ],
+            "sources": [
+                {
+                    "type": "inline",
+                    "dest-filename": "ld.so.conf",
+                    "contents": "/app/lib32\n/app/lib/i386-linux-gnu"
+                }
+            ]
+        },
+        {
+            "name": "steamcmd",
+            "buildsystem": "simple",
+            "build-commands": [
+                "install -Dm755 -t /app/bin steamcmd",
+                "install -Dm755 -t /app/lib/steamcmd/ steamcmd.sh",
+                "install -Dm755 -t /app/lib/steamcmd/linux32 linux32/*",
+                "install -Dm755 -t /app/lib/steamcmd/linux32 linux32/*"
+            ],
+            "sources": [
+                {
+                    "type": "archive",
+                    "url": "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz",
+                    "sha256": "cebf0046bfd08cf45da6bc094ae47aa39ebf4155e5ede41373b579b8f1071e7c",
+                    "strip-components": 0
+                },
+                {
+                    "type": "file",
+                    "path": "steamcmd"
+                }
+            ]
+        },
+        {
+            "name": "lxcomm (project-local)",
+            "buildsystem": "simple",
+            "build-options": {
+                "env": {
+                    "CARGO_HOME": "/run/build/lxcomm"
+                }
+            },
+            "build-commands": [
+                "cargo --frozen fetch --verbose",
+                "cargo --frozen build --release --verbose --features flatpak",
+                "install -Dm755 -t /app/bin target/release/lxcomm",
+                "install -Dm644 -t /app/share/applications/ dist/flatpak/io.github.phantomshift.lxcomm.desktop",
+                "install -Dm644 -t /app/share/metainfo/ dist/flatpak/io.github.phantomshift.lxcomm.metainfo.xml",
+                "install -Dm644 -T assets/lxcomm_icon.svg /app/share/icons/hicolor/scalable/apps/io.github.phantomshift.lxcomm.svg"
+            ],
+            "sources": [
+                {
+                    "type": "archive",
+                    "path": "../../vendor.tar.gz",
+                    "strip-components": 0
+                },
+                {
+                    "type": "dir",
+                    "path": "../../",
+                    "skip": ["vendor.tar.gz"]
+                },
+                {
+                    "type": "file",
+                    "path": "config.toml"
+                }
+            ]
+        }
+    ]
+}

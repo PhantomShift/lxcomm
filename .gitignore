@@ -1,2 +1,11 @@
 /target
 .env
+
+**.tar.gz
+
+# Local Flatpak stuff
+**/.flatpak*
+.tmp*
+dist/flatpak/repo
+dist/flatpak/builddir
+dist/flatpak/config.toml

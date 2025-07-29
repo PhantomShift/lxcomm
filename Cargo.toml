@@ -8,6 +8,7 @@ description = "Mod browser and downloader made specifically for usage with the G
 
 [features]
 dbus = ["zbus"]
+flatpak = []
 
 [dependencies]
 apply = "0.3.0"

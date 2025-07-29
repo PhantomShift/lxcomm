@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=LXCOMM
+Exec=lxcomm
+Type=Application
+Icon=io.github.phantomshift.lxcomm
+Categories=Game;

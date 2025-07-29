@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.phantomshift.lxcomm</id>
+  
+  <name>LXCOMM</name>
+  <summary>Mod browser, downloader and manager made for XCOM2(WOTC) on Linux</summary>
+  
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+  
+  <description>
+    <p>
+      Mod browser, downloader and manager made specifically for non-Steam versions of XCOM2(WOTC) on Linux.
+    </p>
+    
+    <p>
+      ## Steam Subscriber Agreement
+    </p>
+    <p>
+      This program makes use of SteamCMD for interacting with and downloading from the Steam Workshop.
+      For convenience, this flatpak comes with SteamCMD bundled.
+      See [Steam's Subscriber Agreement](https://store.steampowered.com/subscriber_agreement/)
+      for their usage terms.
+    </p>
+  </description>
+
+  <url type="homepage">https://github.com/phantomshift/lxcomm</url>
+  <url type="bugtracker">https://github.com/phantomshift/lxcomm/issues</url>
+  <url type="vcs-browser">https://github.com/phantomshift/lxcomm</url>
+
+  
+  <launchable type="desktop-id">io.github.phantomshift.lxcomm.desktop</launchable>
+</component>
