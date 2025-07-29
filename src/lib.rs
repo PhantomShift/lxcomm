@@ -578,6 +578,8 @@ although this will also retry if any other errors occur. Set this to a higher va
     #[reflect(@AppSettingsLabel("steamcmd: Command Path"))]
     #[reflect(@AppSettingsDescription(r#"If empty (default), attempts to find it in your path using 'which "steamcmd"'"#))]
     steamcmd_command_path: String,
+    #[reflect(@AppSettingsLabel("steamcmd: Login On Startup"))]
+    steamcmd_login_on_startup: bool,
     #[reflect(@AppSettingsLabel("steamcmd: Logout On Exit"))]
     #[reflect(@AppSettingsDescription("If enabled, runs 'steamcmd +login [username] +logout + quit' when closing, necessitating that you log in again when running the app."))]
     steamcmd_logout_on_exit: bool,
@@ -611,6 +613,7 @@ impl Default for AppSettings {
             notify_progress: false,
             reload_profile_on_launch: true,
 
+            steamcmd_login_on_startup: false,
             steamcmd_command_path: Default::default(),
             steamcmd_logout_on_exit: false,
             steamcmd_save_password: false,
@@ -756,7 +759,8 @@ impl App {
             }
         };
 
-        let auto_login = if !app.save.username.is_empty() {
+        let auto_login = if app.settings.steamcmd_login_on_startup && !app.save.username.is_empty()
+        {
             Task::done(Message::SteamCMDLogin(false))
         } else {
             Task::none()
