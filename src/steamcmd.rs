@@ -561,6 +561,7 @@ pub fn which_steamcmd(given: &Option<PathBuf>) -> Result<PathBuf, Error> {
     let path = given
         .to_owned()
         .or_else(|| which(command).ok())
+        .or_else(|| which("steamcmd.sh").ok())
         .ok_or(Error::MissingExecutable)?;
 
     if let Ok(true) = std::fs::exists(&path) {
