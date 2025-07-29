@@ -755,7 +755,12 @@ impl App {
                 }
             }
         };
-        let auto_login = Task::done(Message::SteamCMDLogin(false));
+
+        let auto_login = if !app.save.username.is_empty() {
+            Task::done(Message::SteamCMDLogin(false))
+        } else {
+            Task::none()
+        };
 
         app.scan_downloads();
 
@@ -1152,6 +1157,10 @@ impl App {
                     return Task::none();
                 }
 
+                if self.save.username.is_empty() {
+                    return Task::none();
+                }
+
                 if self.steamcmd_state.session.is_none() {
                     // If there is no session, there should be no ongoing operations
                     // in other threads currently referencing steamcmd state.
@@ -1190,7 +1199,7 @@ impl App {
                 }
 
                 self.modal_stack
-                    .push(AppModal::BusyMessage("Checking steamcmd login...".into()));
+                    .push(AppModal::BusyMessage("Logging into SteamCMD...".into()));
                 let state = self.steamcmd_state.clone();
                 return Task::perform(
                     async move { state.attempt_cached_login().await },
