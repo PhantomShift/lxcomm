@@ -332,6 +332,9 @@ impl Session {
             if self.is_killed() {
                 break false;
             }
+            if self.is_waiting() {
+                break true;
+            }
             match receiver.recv().await {
                 Ok(SessionEvent::Waiting) => break true,
                 Ok(SessionEvent::Shutdown) | Err(broadcast::error::RecvError::Closed) => {
@@ -427,7 +430,8 @@ impl Session {
     pub async fn log_in_cached(&self, user: &str) -> Result<(), Error> {
         self.send_command("@NoPromptForPassword 1")?;
         self.send_command(format!("login {user}"))?;
-        while let Some(line) = self.await_line().await {
+        let mut lines = self.lines();
+        while let Some(line) = lines.next().await {
             if line.contains("FAILED (No cached credentials and @NoPromptForPassword is set)") {
                 self.await_input().await;
                 return Err(Error::LoginFailure);
