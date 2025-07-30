@@ -11,7 +11,8 @@ See project root `justfile` for details.
 
 Note that the flatpak bundles steamcmd during the build process;
 see [Steam's Subscriber Agreement](https://store.steampowered.com/subscriber_agreement/)
-for their usage terms.
+for their usage terms. The SteamCMD `Steam_Install_Agreement` was retrieved from the
+[debian package](https://metadata.ftp-master.debian.org/changelogs//non-free/s/steamcmd/steamcmd_0~20180105-4_copyright).
 
 Some caveats with the flatpak version
 
