@@ -86,6 +86,14 @@ static APP_SESSION_NAME: &str = "io.github.phantomshift.lxcomm";
 #[cfg(target_os = "linux")]
 static APP_SESSION_PATH: &str = "/io/github/phantomshift/lxcomm";
 
+// Potential TODO - Enable dbus integration
+#[cfg(feature = "flatpak")]
+static FLATPAK_ID: LazyLock<Box<str>> = LazyLock::new(|| {
+    std::env::var("FLAPTAK_ID")
+        .unwrap_or(APP_SESSION_NAME.to_string())
+        .into_boxed_str()
+});
+
 fn get_strategy() -> impl AppStrategy {
     etcetera::app_strategy::choose_native_strategy(APP_STRATEGY_ARGS.clone())
         .expect("home directory should be findable in system")
@@ -4115,6 +4123,14 @@ pub fn main() -> eyre::Result<()> {
     };
 
     let window_settings = iced::window::Settings {
+        #[cfg(target_os = "linux")]
+        platform_specific: iced::window::settings::PlatformSpecific {
+            #[cfg(feature = "flatpak")]
+            application_id: FLATPAK_ID.to_string(),
+            #[cfg(not(feature = "flatpak"))]
+            application_id: "lxcomm".to_string(),
+            ..Default::default()
+        },
         icon: Some(icon),
         ..Default::default()
     };
