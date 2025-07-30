@@ -4,6 +4,14 @@ This folder contains reference implementations for packaging on different platfo
 
 ## Flatpak
 
+> [!NOTE]
+> This reference implementation exists as part of research for potentially releasing
+> a flatpak version. However, at this point in time I have no plans of releasing a flatpak
+> version until the project reaches some sort of "1.0" release. But, if anyone is interested
+> in submitting and maintaining a flatpak on flathub for LXCOMM, feel free to open an issue
+> discussing your plan of action and communicate anything you want or need for the flatpak
+> to function or build properly. I know some of you play XCOM2 on Steam Deck!
+
 The flatpak uses `cargo-vendor-filterer` to build crate dependencies offline.
 Note that the manifest contained here is intended to be used for building/testing
 locally and is not intended to be used directly as the manifest in an online flatpak repository.
