@@ -65,7 +65,7 @@
             ]
         },
         {
-            "name": "lxcomm (project-local)",
+            "name": "lxcomm",
             "buildsystem": "simple",
             "build-options": {
                 "env": {
