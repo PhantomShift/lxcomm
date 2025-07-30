@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=LXCOMM
+Exec=/usr/bin/lxcomm
+Type=Application
+Icon=/usr/share/icons/hicolor/scalable/lxcomm_icon.svg
+Categories=Game;
+StartupWMClass=lxcomm
