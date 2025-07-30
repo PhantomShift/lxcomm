@@ -12,7 +12,7 @@ This folder contains reference implementations for packaging on different platfo
 > discussing your plan of action and communicate anything you want or need for the flatpak
 > to function or build properly. I know some of you play XCOM2 on Steam Deck!
 
-The flatpak uses `cargo-vendor-filterer` to build crate dependencies offline.
+The flatpak uses `cargo-vendor-filterer` to bundle crate dependencies offline.
 Note that the manifest contained here is intended to be used for building/testing
 locally and is not intended to be used directly as the manifest in an online flatpak repository.
 See project root `justfile` for details.
