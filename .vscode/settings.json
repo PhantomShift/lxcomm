@@ -1,4 +1,11 @@
 {
     // Lint with all features on by default for convenience
-    "rust-analyzer.cargo.features": "all"
+    "rust-analyzer.cargo.features": "all",
+    "rust-analyzer.files.exclude": ["dist/flatpak/builddir"],
+    "files.watcherExclude": {
+        "**/.git/objects/**": true,
+        "**/.git/subtree-cache/**": true,
+        "**/.hg/store/**": true,
+        "dist/flatpak/builddir": true,
+    }
 }
