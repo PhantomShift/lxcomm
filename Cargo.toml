@@ -49,7 +49,7 @@ fancy-regex = "*"
 toml = "0.9.2"
 chrono = "0.4.41"
 anyhow = "1.0.98"
-single-instance = "0.3.3"
+single-instance = { git = "https://github.com/WLBF/single-instance", version = "0.3.3" }
 zbus = { version = "5.7.1", optional = true }
 governor = "0.10.0"
 # Downgraded due to this change in 9.0 which complicates use on Windows

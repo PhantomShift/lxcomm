@@ -5309,8 +5309,7 @@ dependencies = [
 [[package]]
 name = "single-instance"
 version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4637485391f8545c9d3dbf60f9d9aab27a90c789a700999677583bcb17c8795d"
+source = "git+https://github.com/WLBF/single-instance#b3fae2c90a24f4a53e5944fc2ab828c1c35944cb"
 dependencies = [
  "libc",
  "nix 0.23.2",
