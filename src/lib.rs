@@ -228,6 +228,7 @@ pub enum Message {
     ProfileAddCompleted(bool),
     ProfileAddItems(usize, Vec<u32>),
     ProfileDeletePressed(usize),
+    ProfileDeleteConfirmed(usize),
     ProfileRemoveItems(usize, Vec<u32>),
     ProfileSelected(usize),
     ProfileItemSelected(u32),
@@ -378,6 +379,7 @@ pub enum AsyncDialogKey {
     DownloadAllConfirm,
     DownloadMultipleConfirm,
     ProfileImportCollection,
+    Id(usize),
 }
 
 impl AppModal {
@@ -1814,7 +1816,7 @@ impl App {
                         if let Ok(true) = profile_path.try_exists() {
                             std::fs::remove_dir_all(&profile_path)?
                         }
-std::fs::create_dir(&profile_path)?;
+                        std::fs::create_dir(&profile_path)?;
                         for name in library::profile_folder::ALL.iter() {
                             std::fs::create_dir(profile_path.join(name))?;
                         }
@@ -1864,6 +1866,24 @@ std::fs::create_dir(&profile_path)?;
                 });
             }
             Message::ProfileDeletePressed(id) => {
+                let (modal, mut rec) = AppModal::async_choose(
+                    AsyncDialogKey::Id(id),
+                    "Delete Profile",
+                    "Are you sure you want to delete this profile?",
+                    vec!["No".to_string(), "Yes".to_string()],
+                    AsyncDialogStrategy::Replace,
+                );
+
+                self.modal_stack.push(modal);
+                return Task::future(async move {
+                    if let Some(1) = rec.next().await {
+                        Message::ProfileDeleteConfirmed(id)
+                    } else {
+                        Message::CloseModal
+                    }
+                });
+            }
+            Message::ProfileDeleteConfirmed(id) => {
                 self.save.profiles.remove(&id);
                 if Some(id) == self.save.active_profile {
                     self.save.active_profile = None;
