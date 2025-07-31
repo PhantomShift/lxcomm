@@ -174,12 +174,29 @@ where
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, strum::EnumIs)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, strum::EnumIs)]
+#[serde(untagged)]
 pub enum ModId {
     // Potential TODO - steam IDs can actually be up to 64 bits,
     // change all instances of workshop IDs to u64...
     Workshop(u32),
     Local(PathBuf),
+}
+
+impl<'de> Deserialize<'de> for ModId {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // God why is attempting to serialize from string automatically not just a feature
+        // Note - only really valid for json
+        let s = String::deserialize(deserializer)?;
+        if let Ok(id) = s.parse::<u32>() {
+            Ok(ModId::Workshop(id))
+        } else {
+            Ok(ModId::Local(PathBuf::from(s)))
+        }
+    }
 }
 
 impl ModId {
