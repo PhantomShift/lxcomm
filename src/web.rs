@@ -10,7 +10,8 @@ use crate::{
     CACHE_DIR, Message, XCOM_APPID,
     collections::{Collection, CollectionSource, ImageSource},
     extensions::{SplitAtBoundary, URLArrayListable},
-    files,
+    files::{self, ModDetails},
+    xcom_mod::ModId,
 };
 use eyre::Result;
 use iced::{
@@ -210,7 +211,8 @@ pub async fn resolve_all_dependencies(
             let mut to_extend = Vec::with_capacity(unresolved.len());
 
             unresolved.retain(|id| {
-                if let Some(details) = cache.get_details(*id) {
+                if let Some(ModDetails::Workshop(details)) = cache.get_details(ModId::Workshop(*id))
+                {
                     had_cached = true;
                     dependencies.insert(*id);
                     to_extend.extend(
@@ -735,7 +737,7 @@ pub fn handle_url(url: reqwest::Url) -> Message {
             .find_map(|(name, value)| name.eq("id").then(|| value.parse::<u32>().ok()))
             .flatten()
     {
-        Message::SetViewingItem(id)
+        Message::SetViewingItem(ModId::Workshop(id))
     } else {
         std::thread::spawn(move || {
             if let rfd::MessageDialogResult::Yes = rfd::MessageDialog::new()

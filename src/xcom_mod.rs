@@ -1,9 +1,11 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt::Display,
     io::BufRead,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::library::Library;
@@ -19,6 +21,7 @@ pub enum Error {
 }
 type Result<T> = std::result::Result<T, Error>;
 
+#[derive(Debug, Clone)]
 /// The contents of `.XComMod` files.
 pub struct ModMetadata {
     pub published_file_id: u32,
@@ -147,21 +150,21 @@ pub fn scan_compatibility(folder: &Path) -> ModCompatibility {
     compat
 }
 
-pub fn get_provided_mods<I>(
+pub fn get_provided_mods<'a, I>(
     ids: I,
-    metadata: &BTreeMap<u32, ModMetadata>,
+    metadata: &BTreeMap<ModId, ModMetadata>,
     library: &Library,
 ) -> BTreeSet<String>
 where
-    I: IntoIterator<Item = u32>,
+    I: IntoIterator<Item = &'a ModId>,
 {
     ids.into_iter()
         .flat_map(|id| {
             let mut provided = BTreeSet::new();
-            if let Some(compat) = library.compatibility.get(&id) {
+            if let Some(compat) = library.compatibility.get(id) {
                 provided.extend(compat.ignore_required.iter());
             }
-            if let Some(data) = metadata.get(&id) {
+            if let Some(data) = metadata.get(id) {
                 provided.insert(&data.dlc_name);
             }
 
@@ -169,4 +172,83 @@ where
         })
         .cloned()
         .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, strum::EnumIs)]
+pub enum ModId {
+    // Potential TODO - steam IDs can actually be up to 64 bits,
+    // change all instances of workshop IDs to u64...
+    Workshop(u32),
+    Local(PathBuf),
+}
+
+impl ModId {
+    pub fn maybe_workshop(&self) -> Option<u32> {
+        match self {
+            Self::Workshop(id) => Some(*id),
+            Self::Local(_) => None,
+        }
+    }
+
+    pub fn maybe_local(&self) -> Option<&Path> {
+        match self {
+            Self::Workshop(_) => None,
+            Self::Local(path) => Some(path.as_path()),
+        }
+    }
+
+    pub fn as_u32(&self) -> u32 {
+        match self {
+            Self::Local(_) => 0,
+            Self::Workshop(id) => *id,
+        }
+    }
+
+    /// Specifically for local mods in order to prevent name collisions
+    pub fn get_hash(&self) -> String {
+        match self {
+            Self::Workshop(id) => id.to_string(),
+            Self::Local(path) => {
+                let hash = blake3::hash(path.display().to_string().as_bytes()).to_string();
+                let name = path
+                    .file_name()
+                    .expect("local path should not be relative")
+                    .display();
+                format!("{name}_{hash}")
+            }
+        }
+    }
+}
+
+impl From<&u32> for ModId {
+    fn from(value: &u32) -> Self {
+        Self::from(*value)
+    }
+}
+
+impl From<u32> for ModId {
+    fn from(value: u32) -> Self {
+        Self::Workshop(value)
+    }
+}
+
+impl From<PathBuf> for ModId {
+    fn from(value: PathBuf) -> Self {
+        Self::Local(value)
+    }
+}
+
+impl Display for ModId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Workshop(id) => f.write_str(&id.to_string()),
+            Self::Local(path) => f.write_fmt(format_args!("{}", path.display())),
+        }
+    }
+}
+
+impl AsRef<ModId> for ModId {
+    fn as_ref(&self) -> &ModId {
+        self
+    }
 }

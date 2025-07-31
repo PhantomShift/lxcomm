@@ -21,9 +21,10 @@ use secrecy::{ExposeSecret, SecretString};
 
 use crate::{
     Message, XCOM_APPID,
-    files::{self, Cache},
+    files::{self, Cache, ModDetails},
     metadata::{self, ProgramMetadata},
     steam_manifest::{AppWorkshopManifest, ManifestWorkshopItem, ManifestWorkshopItemDetails},
+    xcom_mod::ModId,
 };
 
 /// Based on the documentation gathered by the LinuxGSM project.
@@ -740,7 +741,13 @@ pub fn build_manifest(library_ids: Vec<u32>, cache: Cache) -> AppWorkshopManifes
 
     let info = library_ids
         .into_iter()
-        .filter_map(|id| cache.get_details(id).map(|details| (id as u64, details)))
+        .filter_map(|id| {
+            if let Some(ModDetails::Workshop(details)) = cache.get_details(ModId::Workshop(id)) {
+                Some((id as u64, details))
+            } else {
+                None
+            }
+        })
         .collect::<BTreeMap<u64, Arc<File>>>();
 
     let size_on_disk: u64 = info

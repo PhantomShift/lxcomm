@@ -24,7 +24,10 @@ use notify::PollWatcher as PlatformWatcher;
 #[cfg(not(target_os = "windows"))]
 use notify::RecommendedWatcher as PlatformWatcher;
 
-use crate::{DATA_DIR, Message, XCOM_APPID, metadata};
+use crate::{
+    DATA_DIR, Message, XCOM_APPID, metadata,
+    xcom_mod::{self, ModId},
+};
 
 const KILO: u64 = 1024;
 const MEGA: u64 = 1024 * 1024;
@@ -91,6 +94,17 @@ pub fn get_item_directory<P: Into<PathBuf>>(download_dir: P, id: u32) -> PathBuf
 
 pub fn get_item_config_directory<P: Into<PathBuf>>(download_dir: P, id: u32) -> PathBuf {
     get_item_directory(download_dir, id).join("Config")
+}
+
+pub fn get_mod_directory<P: Into<PathBuf>>(download_dir: P, id: &ModId) -> PathBuf {
+    match id {
+        ModId::Workshop(id) => get_item_directory(download_dir, *id),
+        ModId::Local(path) => path.clone(),
+    }
+}
+
+pub fn get_mod_config_directory<P: Into<PathBuf>>(download_dir: P, id: &ModId) -> PathBuf {
+    get_mod_directory(download_dir, id).join("Config")
 }
 
 pub fn get_workshop_manifest_path<P: Into<PathBuf>>(download_dir: P) -> PathBuf {
@@ -186,8 +200,45 @@ impl Display for SizeDisplay {
 
 #[derive(Debug, Clone)]
 pub struct Cache {
-    details_cache: MokaCache<u32, Arc<steam_rs::published_file_service::query_files::File>>,
+    details_cache: MokaCache<u32, Arc<query_files::File>>,
     metadata_cache: MokaCache<PathBuf, metadata::ProgramMetadata>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ModDetails {
+    Workshop(Arc<query_files::File>),
+    Local(xcom_mod::ModMetadata),
+}
+
+impl ModDetails {
+    pub fn title(&self) -> &str {
+        match self {
+            Self::Workshop(details) => &details.title,
+            Self::Local(details) => &details.title,
+        }
+    }
+
+    pub fn children(&self) -> &[query_files::ChildFile] {
+        match self {
+            Self::Workshop(details) => details.children.as_slice(),
+            Self::Local(_) => &[],
+        }
+    }
+
+    // TODO - Finish implementing tags (this should not exist when feature is done)
+    pub fn tags(&self) -> &[query_files::Tag] {
+        match self {
+            Self::Workshop(details) => details.tags.as_slice(),
+            Self::Local(_) => &[],
+        }
+    }
+
+    pub fn maybe_workshop(self) -> Option<Arc<query_files::File>> {
+        match self {
+            Self::Workshop(details) => Some(details),
+            Self::Local(_) => None,
+        }
+    }
 }
 
 impl Cache {
@@ -208,17 +259,23 @@ impl Cache {
         Ok(())
     }
 
-    pub fn get_details(&self, id: u32) -> Option<Arc<query_files::File>> {
-        self.details_cache.optionally_get_with(id, || {
-            let path = ITEM_FILE_DETAILS_PATH.join(format!("{id}.json"));
-            if let Ok(json) = std::fs::read_to_string(path)
-                && let Ok(file) = serde_json::from_str(&json)
-            {
-                Some(Arc::new(file))
-            } else {
-                None
-            }
-        })
+    pub fn get_details<I: AsRef<ModId>>(&self, id: I) -> Option<ModDetails> {
+        match id.as_ref() {
+            ModId::Workshop(id) => self
+                .details_cache
+                .optionally_get_with(*id, || {
+                    let path = ITEM_FILE_DETAILS_PATH.join(format!("{id}.json"));
+                    if let Ok(json) = std::fs::read_to_string(path)
+                        && let Ok(file) = serde_json::from_str(&json)
+                    {
+                        Some(Arc::new(file))
+                    } else {
+                        None
+                    }
+                })
+                .map(ModDetails::Workshop),
+            ModId::Local(path) => todo!(),
+        }
     }
 
     pub fn update_metadata<P: AsRef<Path>>(

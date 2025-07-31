@@ -16,7 +16,7 @@ use itertools::Itertools;
 use moka::sync::Cache;
 use similar::ChangeTag;
 
-use crate::{App, Message, PROFILES_DIR, files};
+use crate::{App, Message, PROFILES_DIR, files, xcom_mod::ModId};
 
 #[derive(Debug, strum::Display, Clone, Copy)]
 pub enum DeleteAction {
@@ -30,7 +30,7 @@ pub enum DeleteAction {
 pub enum EditorMessage {
     NewConfigEdit(String),
     Select(String),
-    Load(usize, u32, PathBuf),
+    Load(usize, ModId, PathBuf),
     Delete(String, DeleteAction),
     Save(String),
     SaveAll,
@@ -232,7 +232,7 @@ impl Editor {
                     }
                 }
             }
-            EditorMessage::Load(profile_id, item_id, download_dir) => {
+            EditorMessage::Load(profile_id, mod_id, download_dir) => {
                 self.current_root = None;
                 self.current_file = None;
                 self.original_buffers.clear();
@@ -243,14 +243,15 @@ impl Editor {
 
                 let profile_path = PROFILES_DIR
                     .join(profile_id.to_string())
-                    .join(item_id.to_string());
+                    .join(mod_id.get_hash());
+
                 if !profile_path.exists()
                     && let Err(err) = std::fs::create_dir_all(&profile_path)
                 {
                     eprintln!("Error creating profile directory: {err:?}");
                 }
 
-                let config_path = files::get_item_config_directory(download_dir, item_id);
+                let config_path = files::get_mod_config_directory(download_dir, &mod_id);
                 if config_path.exists() {
                     let result: Result<(), std::io::Error> = try {
                         let read = std::fs::read_dir(&config_path)?;

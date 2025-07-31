@@ -206,7 +206,7 @@ impl WorkshopBrowser for App {
             text!("{:.2} out of 10", file.get_score() * 10.0),
             button(text("View").align_x(Center))
                 .width(Fill)
-                .on_press(Message::SetViewingItem(*id)),
+                .on_press(Message::SetViewingItem(id.into())),
             button(
                 text(if self.item_downloaded(*id) {
                     "Update"

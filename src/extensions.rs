@@ -1,5 +1,7 @@
 use steam_rs;
 
+use crate::{files, xcom_mod};
+
 pub trait DetailsExtension {
     fn get_description(&self) -> &str;
     fn get_score(&self) -> f32;
@@ -15,6 +17,32 @@ impl DetailsExtension for steam_rs::published_file_service::query_files::File {
 
     fn get_score(&self) -> f32 {
         self.vote_data.as_ref().map_or(0.0, |data| data.score)
+    }
+}
+
+impl DetailsExtension for xcom_mod::ModMetadata {
+    fn get_description(&self) -> &str {
+        &self.description
+    }
+
+    fn get_score(&self) -> f32 {
+        0.0
+    }
+}
+
+impl DetailsExtension for files::ModDetails {
+    fn get_description(&self) -> &str {
+        match self {
+            Self::Workshop(details) => details.get_description(),
+            Self::Local(details) => details.get_description(),
+        }
+    }
+
+    fn get_score(&self) -> f32 {
+        match self {
+            Self::Workshop(details) => details.get_score(),
+            Self::Local(details) => details.get_score(),
+        }
     }
 }
 

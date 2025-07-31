@@ -4,7 +4,10 @@ use apply::Apply;
 use fuse_rust::Fuse;
 use serde::{Deserialize, Serialize};
 
-use crate::{files::Cache, xcom_mod};
+use crate::{
+    files::{Cache, ModDetails},
+    xcom_mod::{self, ModId},
+};
 
 static DEFAULT_FUZZY_MATCHER: LazyLock<Fuse> = LazyLock::new(|| Fuse {
     // Potential TODO - Adjust this threshold
@@ -40,7 +43,7 @@ impl FilterMethod {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LibraryItem {
-    pub id: u32,
+    pub id: ModId,
     pub title: String,
     pub path: PathBuf,
     pub needs_update: bool,
@@ -61,16 +64,19 @@ impl Default for LibraryItemSettings {
 
 #[derive(Default)]
 pub struct Library {
-    pub items: BTreeMap<u32, LibraryItem>,
-    pub compatibility: BTreeMap<u32, xcom_mod::ModCompatibility>,
+    pub items: BTreeMap<ModId, LibraryItem>,
+    pub compatibility: BTreeMap<ModId, xcom_mod::ModCompatibility>,
     pub filter_fuzzy: bool,
     pub filter_query: String,
-    pub missing_dependencies: BTreeMap<u32, Vec<String>>,
+    pub missing_dependencies: BTreeMap<ModId, Vec<String>>,
 }
 
 impl Library {
     pub fn iter_selected(&self) -> impl Iterator<Item = &LibraryItem> {
         self.items.values().filter(|item| item.selected)
+    }
+    pub fn iter_workshop_id_selected(&self) -> impl Iterator<Item = u32> {
+        self.items.keys().filter_map(ModId::maybe_workshop)
     }
 
     #[inline]
@@ -120,10 +126,10 @@ impl Library {
     pub fn update_missing_dependencies(
         &mut self,
         cache: Cache,
-        metadata: &BTreeMap<u32, xcom_mod::ModMetadata>,
+        metadata: &BTreeMap<ModId, xcom_mod::ModMetadata>,
     ) {
         let mut all_missing = BTreeMap::new();
-        let provided = xcom_mod::get_provided_mods(self.items.keys().copied(), metadata, self);
+        let provided = xcom_mod::get_provided_mods(self.items.keys(), metadata, self);
         for id in self.items.keys() {
             let mut missing = vec![];
             if let Some(compat) = self.compatibility.get(id) {
@@ -135,19 +141,20 @@ impl Library {
                         .cloned(),
                 )
             }
-            if let Some(info) = cache.get_details(*id) {
+            if let Some(ModDetails::Workshop(info)) = cache.get_details(id) {
                 missing.extend(info.children.iter().filter_map(|child| {
-                    if let Ok(child_id) = child.published_file_id.parse::<u32>()
+                    if let Ok(child_id) =
+                        child.published_file_id.parse::<u32>().map(ModId::Workshop)
                         && !metadata
                             .iter()
-                            .any(|(id, data)| *id == child_id && provided.contains(&data.dlc_name))
+                            .any(|(id, data)| id == &child_id && provided.contains(&data.dlc_name))
                     {
                         Some(format!(
                             "{} ({child_id})",
                             cache
-                                .get_details(child_id)
-                                .as_deref()
-                                .map(|details| details.title.as_str())
+                                .get_details(&child_id)
+                                .as_ref()
+                                .map(|details| details.title())
                                 .unwrap_or("UNKNOWN")
                         ))
                     } else {
@@ -158,7 +165,7 @@ impl Library {
 
             if !missing.is_empty() {
                 missing.sort();
-                all_missing.insert(*id, missing);
+                all_missing.insert(id.clone(), missing);
             }
         }
 
@@ -170,14 +177,14 @@ impl Library {
 pub struct Profile {
     pub id: usize,
     pub name: String,
-    pub items: BTreeMap<u32, LibraryItemSettings>,
+    pub items: BTreeMap<ModId, LibraryItemSettings>,
 
     #[serde(skip)]
-    pub compatibility_issues: BTreeMap<u32, Vec<CompatibilityIssue>>,
+    pub compatibility_issues: BTreeMap<ModId, Vec<CompatibilityIssue>>,
     #[serde(skip)]
     pub add_selected: bool,
     #[serde(skip)]
-    pub view_selected_item: Option<u32>,
+    pub view_selected_item: Option<ModId>,
 }
 
 impl PartialEq for Profile {
@@ -193,11 +200,11 @@ impl PartialOrd for Profile {
 }
 
 impl Profile {
-    pub fn missing_items(&self, library: &Library) -> Vec<u32> {
+    pub fn missing_items(&self, library: &Library) -> Vec<ModId> {
         let mut missing = Vec::new();
         for (item, _) in self.items.iter() {
             if !library.items.contains_key(item) {
-                missing.push(*item);
+                missing.push(item.clone());
             }
         }
 
@@ -207,11 +214,11 @@ impl Profile {
     pub fn update_compatibility_issues(
         &mut self,
         cache: Cache,
-        metadata: &BTreeMap<u32, xcom_mod::ModMetadata>,
+        metadata: &BTreeMap<ModId, xcom_mod::ModMetadata>,
         library: &Library,
     ) {
         let mut all = BTreeMap::new();
-        let provided = xcom_mod::get_provided_mods(self.items.keys().copied(), metadata, library);
+        let provided = xcom_mod::get_provided_mods(self.items.keys(), metadata, library);
 
         for id in self.items.keys() {
             if let Some(compat) = library.compatibility.get(id) {
@@ -270,23 +277,24 @@ impl Profile {
                     }));
                 }
 
-                if let Some(details) = cache.get_details(*id) {
+                if let Some(ModDetails::Workshop(details)) = cache.get_details(id) {
                     issues.extend(details.children.iter().filter_map(|child| {
-                        if let Ok(child_id) = child.published_file_id.parse::<u32>()
+                        if let Ok(child_id) =
+                            child.published_file_id.parse::<u32>().map(ModId::Workshop)
                             && !self.items.contains_key(&child_id)
-                            && !metadata.iter().any(|(&id, data)| {
-                                id == child_id && provided.contains(&data.dlc_name)
+                            && !metadata.iter().any(|(id, data)| {
+                                id == &child_id && provided.contains(&data.dlc_name)
                             })
                         {
                             CompatibilityIssue::MissingWorkshop(
-                                child_id,
+                                child_id.as_u32(),
                                 format!(
                                     "{} ({})",
                                     child.published_file_id,
                                     cache
-                                        .get_details(child_id)
-                                        .as_deref()
-                                        .map(|details| details.title.as_str())
+                                        .get_details(&child_id)
+                                        .as_ref()
+                                        .map(|details| details.title())
                                         .unwrap_or("UNKNOWN")
                                 ),
                             )
@@ -299,10 +307,10 @@ impl Profile {
 
                 if !issues.is_empty() {
                     issues.sort();
-                    all.insert(*id, issues);
+                    all.insert(id.clone(), issues);
                 }
             } else {
-                all.insert(*id, vec![CompatibilityIssue::Unknown]);
+                all.insert(id.clone(), vec![CompatibilityIssue::Unknown]);
             }
         }
 

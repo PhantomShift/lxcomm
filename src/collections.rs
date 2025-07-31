@@ -17,8 +17,10 @@ use crate::{
     App, LOCAL_COLLECTIONS_DIR, Message,
     browser::WorkshopBrowser,
     extensions::DetailsExtension,
+    files::ModDetails,
     reset_scroll,
     web::{self, CollectionQueryResponse, ResolverMessage},
+    xcom_mod::ModId,
 };
 
 #[derive(Debug, Clone, Hash, Serialize, Deserialize)]
@@ -296,7 +298,11 @@ impl CollectionsState {
                                             let collection = collection.clone();
                                             move || {
                                                 Message::ItemDetailsAddToLibraryRequest(
-                                                    collection.items.clone(),
+                                                    collection
+                                                        .items
+                                                        .iter()
+                                                        .map(ModId::from)
+                                                        .collect(),
                                                 )
                                             }
                                         }),
@@ -327,7 +333,9 @@ impl CollectionsState {
                         )
                         .push(
                             grid(collection.items.iter().map(|id| {
-                                if let Some(file) = state.file_cache.get_details(*id) {
+                                if let Some(ModDetails::Workshop(file)) =
+                                    state.file_cache.get_details(ModId::Workshop(*id))
+                                {
                                     container(
                                         button(
                                             row![
@@ -342,7 +350,7 @@ impl CollectionsState {
                                             .spacing(8),
                                         )
                                         .style(button::text)
-                                        .on_press(Message::SetViewingItem(*id)),
+                                        .on_press(Message::SetViewingItem((*id).into())),
                                     )
                                     .style(container::secondary)
                                     .into()
@@ -477,7 +485,11 @@ impl App {
                     let resolve_images = collection
                         .items
                         .iter()
-                        .filter_map(|id| self.file_cache.get_details(*id))
+                        .filter_map(|id| {
+                            self.file_cache
+                                .get_details(ModId::from(*id))
+                                .and_then(ModDetails::maybe_workshop)
+                        })
                         .fold(Task::none(), |task, file| {
                             task.chain(self.cache_item_image(&file.preview_url))
                         });
@@ -487,7 +499,7 @@ impl App {
                     let unknown = collection
                         .items
                         .iter()
-                        .filter(|id| self.file_cache.get_details(**id).is_none())
+                        .filter(|id| self.file_cache.get_details(ModId::from(**id)).is_none())
                         .copied()
                         .collect::<Vec<_>>();
                     return if !unknown.is_empty() {

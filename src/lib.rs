@@ -50,9 +50,11 @@ use strum::{Display, EnumIter, IntoEnumIterator};
 
 use crate::{
     browser::WorkshopBrowser,
-    collections::{Collection, CollectionsMessage, CollectionsState},
+    collections::{Collection, CollectionsMessage, CollectionsState, ImageSource},
+    files::ModDetails,
     platform::symbols,
     widgets::{AsyncDialog, AsyncDialogField},
+    xcom_mod::ModId,
 };
 use crate::{collections::CollectionSource, mod_edit::EditorMessage};
 use crate::{extensions::DetailsExtension, web::resolve_all_dependencies};
@@ -173,7 +175,7 @@ pub enum Message {
 
     SetApiKey(String),
     SetBrowsePage(u32),
-    SetViewingItem(u32),
+    SetViewingItem(ModId),
     BrowseEditQuery(String),
     BrowseEditTag(web::XCOM2WorkshopTag),
     BrowseEditSort(web::WorkshopSort),
@@ -208,7 +210,7 @@ pub enum Message {
     Settings(SettingsMessage),
     ModEditor(EditorMessage),
 
-    LibraryToggleItem(u32, bool),
+    LibraryToggleItem(ModId, bool),
     LibraryToggleAll(bool),
     LibraryUpdateRequest,
     LibraryScanRequest,
@@ -218,7 +220,7 @@ pub enum Message {
     LibraryAddToProfileRequest,
     LibraryAddToProfileToggleAll(bool),
     LibraryAddToProfileToggled(usize, bool),
-    LibraryAddToProfileConfirm(Vec<u32>),
+    LibraryAddToProfileConfirm(Vec<ModId>),
     LibraryDeleteRequest,
     LibraryDeleteConfirm,
     LibraryFilterUpdateQuery(String),
@@ -226,12 +228,12 @@ pub enum Message {
     ProfileAddPressed,
     ProfileAddEdited(String),
     ProfileAddCompleted(bool),
-    ProfileAddItems(usize, Vec<u32>),
+    ProfileAddItems(usize, Vec<ModId>),
     ProfileDeletePressed(usize),
     ProfileDeleteConfirmed(usize),
-    ProfileRemoveItems(usize, Vec<u32>),
+    ProfileRemoveItems(usize, Vec<ModId>),
     ProfileSelected(usize),
-    ProfileItemSelected(u32),
+    ProfileItemSelected(ModId),
     ProfileViewFolderRequested(usize, String),
     ProfileImportFolderRequested(usize, String),
     ProfileImportCollectionRequested(Arc<Collection>),
@@ -257,7 +259,7 @@ pub enum Message {
     LoadFindLocalMatched(PathBuf),
     LoadFindLocalResolved(PathBuf),
 
-    ItemDetailsAddToLibraryRequest(Vec<u32>),
+    ItemDetailsAddToLibraryRequest(Vec<ModId>),
     ItemDetailsAddToLibraryAllRequest(u32),
 
     SetPage(AppPage),
@@ -337,11 +339,11 @@ pub enum AppPage {
 #[derivative(PartialEq)]
 pub enum AppModal {
     ApiKeyRequest,
-    AddToProfileRequest(Vec<u32>),
+    AddToProfileRequest(Vec<ModId>),
     LibraryDeleteRequest,
     SteamGuardCodeRequest,
     ProfileAddRequest,
-    ItemDetailedView(u32),
+    ItemDetailedView(ModId),
     CollectionDetailedView(CollectionSource),
     Busy,
     BusyMessage(String),
@@ -472,8 +474,9 @@ pub struct App {
     errorred_downloads: BTreeMap<u32, String>,
     cancel_download_handles: HashMap<u32, iced::task::Handle>,
     downloaded: BTreeMap<u32, PathBuf>,
+    local: BTreeSet<PathBuf>,
     // Potential todo: cache results? Doesn't seem strictly necessary
-    metadata: BTreeMap<u32, xcom_mod::ModMetadata>,
+    metadata: BTreeMap<ModId, xcom_mod::ModMetadata>,
     library: library::Library,
     file_cache: files::Cache,
     markup_cache: markup::MarkupCache,
@@ -743,6 +746,7 @@ impl App {
             errorred_downloads: BTreeMap::new(),
             cancel_download_handles: HashMap::new(),
             downloaded: BTreeMap::new(),
+            local: BTreeSet::new(),
             metadata: BTreeMap::new(),
             library: library::Library::default(),
             file_cache: files::Cache::default(),
@@ -978,8 +982,9 @@ impl App {
                 return Task::done(Message::BrowseUpdateQuery);
             }
             Message::SetViewingItem(id) => {
-                self.modal_stack.push(AppModal::ItemDetailedView(id));
-                if let Some(info) = self.file_cache.get_details(id) {
+                self.modal_stack
+                    .push(AppModal::ItemDetailedView(id.clone()));
+                if let Some(ModDetails::Workshop(info)) = self.file_cache.get_details(&id) {
                     self.markup_cache.cache_markup(info.get_description());
 
                     let unknown = info
@@ -990,7 +995,10 @@ impl App {
                                 .published_file_id
                                 .parse::<u32>()
                                 .expect("ids should be numbers");
-                            self.file_cache.get_details(id).is_none().then_some(id)
+                            self.file_cache
+                                .get_details(ModId::Workshop(id))
+                                .is_none()
+                                .then_some(id)
                         })
                         .collect::<Vec<_>>();
 
@@ -1018,7 +1026,9 @@ impl App {
                     } else {
                         return self.cache_item_image(&info.preview_url);
                     }
-                } else if let Some(mut sender) = self.background_resolver_sender.clone() {
+                } else if let ModId::Workshop(id) = id
+                    && let Some(mut sender) = self.background_resolver_sender.clone()
+                {
                     return Task::future(async move {
                         if let Err(err) = sender
                             .send(web::ResolverMessage::RequestResolve(vec![id]).into())
@@ -1344,7 +1354,7 @@ impl App {
                 }
                 self.completed_downloads.remove(&id);
                 self.downloaded.remove(&id);
-                self.library.items.remove(&id);
+                self.library.items.remove(&ModId::Workshop(id));
             }
             Message::DownloadCancelRequested(id) => {
                 if let Some(_progress) = self.download_queue.remove(&id) {
@@ -1352,10 +1362,10 @@ impl App {
                     #[cfg(target_os = "linux")]
                     if self.settings.notify_progress
                         && let Some(notif_id) = NOTIF_CACHE.remove(&id)
-                        && let Some(details) = self.file_cache.get_details(id)
+                        && let Some(details) = self.file_cache.get_details(ModId::Workshop(id))
                     {
                         let mut notif = notify_rust::Notification::new();
-                        let title = &details.title;
+                        let title = details.title();
                         notif
                             .appname("LXCOMM")
                             .summary(&format!("{title} Not Downloaded"))
@@ -1394,10 +1404,10 @@ impl App {
                 #[cfg(target_os = "linux")]
                 if self.settings.notify_progress
                     && let Some(notif_id) = NOTIF_CACHE.remove(&id)
-                    && let Some(details) = self.file_cache.get_details(id)
+                    && let Some(details) = self.file_cache.get_details(ModId::Workshop(id))
                 {
                     let mut notif = notify_rust::Notification::new();
-                    let title = &details.title;
+                    let title = details.title();
                     notif
                         .appname("LXCOMM")
                         .summary(&format!("Downloaded {title}"))
@@ -1450,10 +1460,10 @@ impl App {
                 #[cfg(target_os = "linux")]
                 if self.settings.notify_progress
                     && let Some(notif_id) = NOTIF_CACHE.remove(&id)
-                    && let Some(details) = self.file_cache.get_details(id)
+                    && let Some(details) = self.file_cache.get_details(ModId::Workshop(id))
                 {
                     let mut notif = notify_rust::Notification::new();
-                    let title = &details.title;
+                    let title = details.title();
                     notif
                         .appname("LXCOMM")
                         .summary(&format!("Error Downloading {title}"))
@@ -1480,7 +1490,8 @@ impl App {
 
                 #[cfg(target_os = "linux")]
                 if self.settings.notify_progress
-                    && let Some(info) = self.file_cache.get_details(id)
+                    && let Some(ModDetails::Workshop(info)) =
+                        self.file_cache.get_details(ModId::Workshop(id))
                     && let Ok(total_size) = info.file_size.parse::<u64>()
                 {
                     let title = info.title.clone();
@@ -1546,7 +1557,7 @@ impl App {
                             }
 
                             let list = to_download.iter().map(|&id| {
-                                format!("{} ({id})", cache.get_details(id).as_deref().map(|f| f.title.as_str()).unwrap_or("UNKNOWN"))
+                                format!("{} ({id})", cache.get_details(ModId::Workshop(id)).as_ref().map(|f| f.title()).unwrap_or("UNKNOWN"))
                             }).join("\n");
                             let (modal, mut rec) = AppModal::async_choose(
                                 AsyncDialogKey::DownloadAllConfirm,
@@ -1581,8 +1592,8 @@ impl App {
                     "Download All?",
                     ids.iter()
                         .map(|id| {
-                            if let Some(details) = self.file_cache.get_details(*id) {
-                                format!("{} ({id})", details.title)
+                            if let Some(details) = self.file_cache.get_details(ModId::from(id)) {
+                                format!("{} ({id})", details.title())
                             } else {
                                 format!("UNKNOWN ({id})")
                             }
@@ -1635,8 +1646,8 @@ impl App {
                     ));
                 }
 
-                for item in self.library.iter_selected() {
-                    self.download_queue.push_back(item.id, 0);
+                for id in self.library.iter_workshop_id_selected() {
+                    self.download_queue.push_back(id, 0);
                 }
                 return self.queue_downloads();
             }
@@ -1646,12 +1657,9 @@ impl App {
             Message::LibraryCheckOutdatedRequest => {
                 let items = self
                     .library
-                    .iter_selected()
-                    .filter(|item| {
-                        !self.is_downloading(item.id) && !self.pending_queue.contains_key(&item.id)
-                    })
-                    .map(|item| {
-                        let id = item.id;
+                    .iter_workshop_id_selected()
+                    .filter(|&id| !self.is_downloading(id) && !self.pending_queue.contains_key(&id))
+                    .map(|id| {
                         (
                             id as u64,
                             metadata::read_metadata(id, &self.settings.download_directory)
@@ -1679,7 +1687,8 @@ impl App {
                     .library
                     .items
                     .keys()
-                    .map(|&id| {
+                    .filter_map(ModId::maybe_workshop)
+                    .map(|id| {
                         (
                             id as u64,
                             metadata::read_metadata(id, &self.settings.download_directory)
@@ -1728,9 +1737,8 @@ impl App {
                 }
                 self.modal_stack.push(AppModal::AddToProfileRequest(
                     self.library
-                        .items
-                        .iter()
-                        .filter_map(|(id, item)| item.selected.then_some(*id))
+                        .iter_selected()
+                        .map(|item| item.id.clone())
                         .collect(),
                 ));
             }
@@ -1753,10 +1761,10 @@ impl App {
                     .values_mut()
                     .filter(|profile| profile.add_selected)
                 {
-                    for &item in ids.iter() {
+                    for item in ids.iter() {
                         profile
                             .items
-                            .entry(item)
+                            .entry(item.clone())
                             .or_insert_with(library::LibraryItemSettings::default);
                     }
                     profile.update_compatibility_issues(
@@ -1772,8 +1780,8 @@ impl App {
                 self.modal_stack.pop();
                 return Task::batch(
                     self.library
-                        .iter_selected()
-                        .map(|item| Task::done(Message::DeleteRequested(item.id))),
+                        .iter_workshop_id_selected()
+                        .map(|id| Task::done(Message::DeleteRequested(id))),
                 );
             }
             Message::LibraryFilterUpdateQuery(query) => {
@@ -1916,7 +1924,8 @@ impl App {
                 if let Some(profile) = self.save.profiles.get(&id) {
                     let mut tasks = Vec::new();
                     for id in profile.items.keys() {
-                        if let Some(details) = self.file_cache.get_details(*id) {
+                        if let Some(ModDetails::Workshop(details)) = self.file_cache.get_details(id)
+                        {
                             self.markup_cache.cache_markup(details.get_description());
                             tasks.push(self.cache_item_image(&details.preview_url));
                         }
@@ -1936,10 +1945,10 @@ impl App {
                 if let Some(selected) = self.selected_profile_id
                     && let Some(profile) = self.save.profiles.get_mut(&selected)
                 {
-                    if Some(id) == profile.view_selected_item {
+                    if Some(&id) == profile.view_selected_item.as_ref() {
                         profile.view_selected_item = None;
                     } else {
-                        profile.view_selected_item = Some(id);
+                        profile.view_selected_item = Some(id.clone());
 
                         if let Some(task) = self.mod_editor.update(mod_edit::EditorMessage::Load(
                             selected,
@@ -2059,7 +2068,7 @@ impl App {
                                         Message::ProfileAddCompleted(true),
                                         Message::ProfileAddItems(
                                             next_unused,
-                                            collection.items.clone(),
+                                            collection.items.iter().map(ModId::from).collect(),
                                         ),
                                     ])
                                 }
@@ -2337,7 +2346,7 @@ impl App {
                 .chain(Task::future(async move {
                     match resolve_all_dependencies(id, client, cache).await {
                         Ok(dependencies) => Message::ItemDetailsAddToLibraryRequest(
-                            dependencies.iter().copied().collect(),
+                            dependencies.iter().map(ModId::from).collect(),
                         ),
                         Err(err) => Message::display_error(
                             "Error Resolving Dependencies",
@@ -2616,10 +2625,21 @@ impl App {
                         text("Mods").size(20),
                         scrollable(column(profile.items.keys().map(|id| {
                             let mut issues = vec![];
-                            if !self.item_downloaded(*id) {
+                            let missing = if let ModId::Workshop(id) = id
+                                && !self.item_downloaded(*id)
+                            {
                                 issues
                                     .push("Missing: Mod is not downloaded (or found)".to_string());
-                            }
+                                true
+                            } else if let ModId::Local(path) = id
+                                && !path.exists()
+                            {
+                                issues
+                                    .push(format!("Missing: Could find mod at {}", path.display()));
+                                true
+                            } else {
+                                false
+                            };
 
                             issues.extend(
                                 profile
@@ -2656,8 +2676,8 @@ impl App {
                                     }),
                             );
 
-                            let button_style = if let Some(sel_id) = profile.view_selected_item
-                                && sel_id == *id
+                            let button_style = if let Some(sel_id) = &profile.view_selected_item
+                                && sel_id == id
                             {
                                 button::secondary
                             } else if !issues.is_empty() {
@@ -2665,14 +2685,10 @@ impl App {
                             } else {
                                 button::primary
                             };
-                            let missing_text = if self.item_downloaded(*id) {
-                                ""
-                            } else {
-                                " (MISSING)"
-                            };
-                            let button = if let Some(details) = self.file_cache.get_details(*id) {
-                                button(text!("{} ({id}){missing_text}", details.title))
-                                    .on_press(Message::ProfileItemSelected(*id))
+                            let missing_text = if missing { "" } else { " (MISSING)" };
+                            let button = if let Some(details) = self.file_cache.get_details(id) {
+                                button(text!("{} ({id}){missing_text}", details.title()))
+                                    .on_press_with(|| Message::ProfileItemSelected(id.clone()))
                             } else {
                                 button(text!("UNKNOWN ({id}){missing_text}"))
                             }
@@ -2692,13 +2708,17 @@ impl App {
                         })))
                         .height(128),
                     ]
-                    .push(profile.view_selected_item.map(|item_id| {
+                    .push(profile.view_selected_item.as_ref().map(|item_id| {
                         row![
-                            button("View Details").on_press(Message::SetViewingItem(item_id)),
+                            button("View Details")
+                                .on_press_with(|| Message::SetViewingItem(item_id.clone())),
                             horizontal_space(),
                             button("Remove Mod")
                                 .style(button::danger)
-                                .on_press(Message::ProfileRemoveItems(profile.id, vec![item_id]))
+                                .on_press_with(|| Message::ProfileRemoveItems(
+                                    profile.id,
+                                    vec![item_id.clone()]
+                                ))
                         ]
                     }))
                     .push(
@@ -2717,7 +2737,7 @@ impl App {
         .into()
     }
 
-    fn view_item_detailed(&self, id: u32) -> Element<'_, Message> {
+    fn view_item_detailed<'a>(&'a self, id: &'a ModId) -> Element<'a, Message> {
         let Some(file) = self.file_cache.get_details(id) else {
             return container(
                 column![
@@ -2737,24 +2757,24 @@ impl App {
             .into();
         };
 
-        let download_button = if self.item_downloaded(id) {
+        let download_button = if self.item_downloaded(id.as_u32()) {
             button("Update")
         } else {
             button("Download")
         }
-        .on_press_maybe(
+        .on_press_maybe(id.maybe_workshop().and_then(|id| {
             self.is_downloading(id)
                 .not()
-                .then_some(Message::SteamCMDDownloadRequested(id)),
-        );
+                .then_some(Message::SteamCMDDownloadRequested(id))
+        }));
 
-        let tags = if let Some(item) = self.library.items.get(&id) {
+        let tags = if let Some(item) = self.library.items.get(id) {
             let metadata = self.file_cache.get_metadata(&item.path);
             println!("Metadata: {metadata:?}");
             &mut metadata.tags.into_iter() as &mut dyn Iterator<Item = metadata::Tag>
         } else {
             &mut file
-                .tags
+                .tags()
                 .iter()
                 .map(|tag| metadata::Tag::from(tag.tag.as_str()))
                 as &mut dyn Iterator<Item = metadata::Tag>
@@ -2769,26 +2789,39 @@ impl App {
         container(
             container(column![
                 row![
-                    web::image_maybe(&self.images, file.preview_url.clone())
-                        .height(256)
-                        .width(256)
-                        .padding(16),
+                    web::image_from_source(
+                        &self.images,
+                        if let ModDetails::Workshop(details) = &file {
+                            ImageSource::Web(details.preview_url.clone())
+                        } else if let Some(path) = id.maybe_local()
+                            && path.join("ModPreview.jpg").exists()
+                        {
+                            ImageSource::Path(path.join("ModPreview.jpg"))
+                        } else {
+                            ImageSource::Web(String::new())
+                        }
+                    )
+                    .height(256)
+                    .width(256)
+                    .padding(16),
                     column![
-                        text(file.title.clone()).size(18),
+                        text(file.title().to_owned()).size(18),
                         text!("{:.2} out of 10", file.get_score() * 10.0),
                     ]
-                    .push(file.children.is_empty().not().then(|| {
+                    .push(file.children().is_empty().not().then(|| {
                         row!["Dependencies -"]
-                            .extend(file.children.iter().map(|child| {
+                            .extend(file.children().iter().map(|child| {
                                 let child_id = child
                                     .published_file_id
                                     .parse::<u32>()
                                     .expect("id should be a valid id");
-                                if let Some(details) = self.file_cache.get_details(child_id) {
+                                if let Some(details) =
+                                    self.file_cache.get_details(ModId::from(child_id))
+                                {
                                     row![
                                         rich_text([span(format!(
                                             "{} ({child_id}) ",
-                                            details.title
+                                            details.title()
                                         ))
                                         .link(child_id)])
                                         .on_link_click(Message::SetViewingItem),
@@ -2808,24 +2841,25 @@ impl App {
                     }))
                     .push(row![
                         download_button,
-                        button("Add to Profile")
-                            .on_press(Message::ItemDetailsAddToLibraryRequest(vec![id])),
+                        button("Add to Profile").on_press_with(|| {
+                            Message::ItemDetailsAddToLibraryRequest(vec![id.clone()])
+                        }),
                     ])
-                    .push(row![
-                        file.children.is_empty().not().then_some(
+                    .push(id.maybe_workshop().map(|id| row![
+                        file.children().is_empty().not().then_some(
                             button("Download All Dependencies")
                                 .on_press(Message::DownloadAllRequested(id))
                         ),
                         button("Add All Dependencies to Profile")
                             .on_press(Message::ItemDetailsAddToLibraryAllRequest(id))
-                    ])
-                    .push(
+                    ]))
+                    .push(id.maybe_workshop().and_then(|id| {
                         self.item_downloaded(id).then_some(
                             button("Delete")
                                 .style(button::danger)
-                                .on_press(Message::DeleteRequested(id))
+                                .on_press(Message::DeleteRequested(id)),
                         )
-                    )
+                    }),)
                     .push(
                         tags.is_empty()
                             .not()
@@ -3042,7 +3076,7 @@ impl App {
                         AppModal::LibraryDeleteRequest => self.library_delete_request_modal(),
                         AppModal::ProfileAddRequest => self.profile_add_modal(),
                         AppModal::AddToProfileRequest(ids) => self.add_to_profile_modal(ids),
-                        AppModal::ItemDetailedView(id) => self.view_item_detailed(*id),
+                        AppModal::ItemDetailedView(id) => self.view_item_detailed(id),
                         AppModal::CollectionDetailedView(source) => self.collections.view_collection_detailed(self, source),
                         AppModal::AsyncDialog(dialog) => dialog.view().max_width(512.0).into(),
                         dialog @ AppModal::AsyncChoose {
@@ -3192,8 +3226,8 @@ impl App {
         ));
 
         for item in self.library.iter_filtered() {
-            let id = item.id;
-            let missing = self.library.missing_dependencies.get(&id);
+            let id = &item.id;
+            let missing = self.library.missing_dependencies.get(id);
             let text_style = if missing.is_some() {
                 text::danger
             } else {
@@ -3201,15 +3235,17 @@ impl App {
             };
             grid = grid.push(iced_aw::grid_row!(
                 checkbox("", item.selected)
-                    .on_toggle(move |toggle| Message::LibraryToggleItem(id, toggle)),
-                button(symbols::eye()).on_press(Message::SetViewingItem(id)),
+                    .on_toggle(move |toggle| Message::LibraryToggleItem(id.clone(), toggle)),
+                button(symbols::eye()).on_press_with(|| Message::SetViewingItem(id.clone())),
                 tooltip(
-                    rich_text([span(id).link(id.to_string()).underline(missing.is_some())])
-                        .on_link_click(|link: String| {
-                            println!("link {link} was clicked");
-                            Message::None
-                        })
-                        .style(text_style),
+                    rich_text([span(id.get_hash())
+                        .link(id.get_hash())
+                        .underline(missing.is_some())])
+                    .on_link_click(|link: String| {
+                        println!("link {link} was clicked");
+                        Message::None
+                    })
+                    .style(text_style),
                     if let Some(missing) = missing {
                         container(column(
                             missing.iter().map(|s| text!("Missing Item: {s}").into()),
@@ -3224,7 +3260,7 @@ impl App {
                 text(&item.title).style(text_style),
                 text(
                     self.metadata
-                        .get(&id)
+                        .get(id)
                         .map(|data| data.dlc_name.as_str())
                         .unwrap_or("UNKNOWN")
                 )
@@ -3446,7 +3482,9 @@ impl App {
                     .height(50),
                 );
 
-            if let Some(details) = self.file_cache.get_details(*id) {
+            if let Some(ModDetails::Workshop(details)) =
+                self.file_cache.get_details(ModId::from(id))
+            {
                 let total_size = details.file_size.parse::<u64>().ok().unwrap_or_default();
                 let percent = *size as f32 / total_size as f32 * 100.0;
                 let total_display = files::SizeDisplay::automatic(total_size);
@@ -3516,11 +3554,12 @@ impl App {
                 self.completed_downloads
                     .iter()
                     .map(|id| -> Element<'_, Message> {
-                        let info = if let Some(details) = self.file_cache.get_details(*id) {
-                            format!("{} ({id})", details.title)
-                        } else {
-                            format!("Unknown ({id})")
-                        };
+                        let info =
+                            if let Some(details) = self.file_cache.get_details(ModId::from(id)) {
+                                format!("{} ({id})", details.title())
+                            } else {
+                                format!("Unknown ({id})")
+                            };
                         row![
                             text(info).shaping(text::Shaping::Advanced),
                             horizontal_space(),
@@ -3544,8 +3583,8 @@ impl App {
                 .align_y(Vertical::Bottom),
             );
             col = col.extend(self.pending_queue.iter().map(|(&id, &time)| {
-                let info = if let Some(details) = self.file_cache.get_details(id) {
-                    format!("{} ({id})", details.title)
+                let info = if let Some(details) = self.file_cache.get_details(ModId::from(id)) {
+                    format!("{} ({id})", details.title())
                 } else {
                     format!("Unknown ({id})")
                 };
@@ -3576,8 +3615,8 @@ impl App {
             );
             col = col.extend(self.errorred_downloads.iter().map(
                 |(id, reason)| -> Element<'_, Message> {
-                    let info = if let Some(details) = self.file_cache.get_details(*id) {
-                        format!("{} ({id})\n{reason}", details.title)
+                    let info = if let Some(details) = self.file_cache.get_details(ModId::from(id)) {
+                        format!("{} ({id})\n{reason}", details.title())
                     } else {
                         format!("Unknown ({id})\n{reason}")
                     };
@@ -3680,7 +3719,7 @@ impl App {
         .into()
     }
 
-    fn add_to_profile_modal<'a>(&'a self, items: &'a [u32]) -> Element<'a, Message> {
+    fn add_to_profile_modal<'a>(&'a self, items: &'a [ModId]) -> Element<'a, Message> {
         let grid = iced_aw::grid![iced_aw::grid_row![
             checkbox(
                 "",
@@ -3844,14 +3883,16 @@ impl App {
                                             data.published_file_id = file_name.to_string_lossy().parse::<u32>()
                                                 .expect("steam workshop items should be contained in a folder named by its ID");
                                         }
+                                        // TODO - Make scan_downloads generic over source (workshop + local)
+                                        let workshkop_id = ModId::Workshop(data.published_file_id);
                                         let compat = self
                                             .library
                                             .compatibility
-                                            .entry(data.published_file_id)
+                                            .entry(workshkop_id.clone())
                                             .or_default();
                                         compat.extend_with(xcom_mod::scan_compatibility(&entry));
                                         self.downloaded.insert(data.published_file_id, entry);
-                                        self.metadata.insert(data.published_file_id, data);
+                                        self.metadata.insert(workshkop_id.clone(), data);
                                     }
                                     Err(err) => {
                                         eprintln!("Error parsing XComMod metadata file: {err:?}")
@@ -3877,12 +3918,13 @@ impl App {
         }
 
         for (id, path) in self.downloaded.iter() {
-            if let Some(details) = self.file_cache.get_details(*id) {
+            let id = ModId::Workshop(*id);
+            if let Some(details) = self.file_cache.get_details(&id) {
                 // Raw read
                 let mut metadata = metadata::read_in(path).unwrap_or_default();
                 metadata.tags.extend(
                     details
-                        .tags
+                        .tags()
                         .iter()
                         .map(|tag| metadata::Tag::from(tag.tag.as_ref())),
                 );
@@ -3891,14 +3933,14 @@ impl App {
                 }
             }
 
-            if let Some(item) = self.library.items.get_mut(id) {
+            if let Some(item) = self.library.items.get_mut(&id) {
                 item.path = path.clone();
-            } else if let Some(details) = self.file_cache.get_details(*id) {
+            } else if let Some(details) = self.file_cache.get_details(&id) {
                 self.library.items.insert(
-                    *id,
+                    id.clone(),
                     library::LibraryItem {
-                        id: *id,
-                        title: details.title.clone(),
+                        id: id.clone(),
+                        title: details.title().to_owned(),
                         path: path.clone(),
                         needs_update: false,
                         selected: false,
@@ -3928,7 +3970,7 @@ impl App {
         // Heuristically check if download was incomplete,
         // within 10% of expected size in case Steam is not reporting
         // sizes correctly
-        if let Some(data) = self.file_cache.get_details(id)
+        if let Some(ModDetails::Workshop(data)) = self.file_cache.get_details(ModId::Workshop(id))
             && let Ok(expected_size) = data.file_size.parse::<u64>()
         {
             if let Ok(size) = files::get_size(files::get_item_directory(
