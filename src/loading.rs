@@ -157,7 +157,6 @@ pub fn write_mod_list<W: std::io::Write>(
     mut writer: W,
 ) -> Result<(), std::io::Error> {
     writeln!(writer, "[Engine.XComModOptions]")?;
-    writeln!(writer)?;
 
     for id in profile.items.keys() {
         let Some(data) = metadata.get(id) else {
