@@ -1814,6 +1814,7 @@ impl App {
                         if let Ok(true) = profile_path.try_exists() {
                             std::fs::remove_dir_all(&profile_path)?
                         }
+std::fs::create_dir(&profile_path)?;
                         for name in library::profile_folder::ALL.iter() {
                             std::fs::create_dir(profile_path.join(name))?;
                         }
