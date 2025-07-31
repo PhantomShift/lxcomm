@@ -323,3 +323,12 @@ pub enum CompatibilityIssue {
     /// The mod is missing its data
     Unknown,
 }
+
+pub mod profile_folder {
+    pub const CHARACTER_POOL: &str = "CharacterPool";
+    pub const CONFIG: &str = "Config";
+    pub const PHOTOBOOTH: &str = "Photobooth";
+    pub const SAVE_DATA: &str = "SaveData";
+
+    pub const ALL: [&str; 4] = [CHARACTER_POOL, CONFIG, PHOTOBOOTH, SAVE_DATA];
+}

@@ -3,7 +3,11 @@ use std::{
     path::Path,
 };
 
-use crate::{ACTIVE_CONFIG_DIR, ACTIVE_MODS_DIR, PROFILES_DIR, files, library::Profile, xcom_mod};
+use crate::{
+    ACTIVE_CONFIG_DIR, ACTIVE_MODS_DIR, PROFILES_DIR, files,
+    library::{self, Profile},
+    xcom_mod,
+};
 
 pub fn build_active_config<D: AsRef<Path>>(
     download_dir: D,
@@ -203,7 +207,7 @@ pub fn link_mod_environment<D: AsRef<Path>>(
         let backup = mods_dest.with_added_extension("bak");
         if !backup.try_exists()? {
             eprintln!("Moving existing mods directory to {}...", backup.display());
-            dircpy::copy_dir(&mods_dest, backup)?;
+            std::fs::rename(&mods_dest, backup)?;
         }
         std::fs::remove_dir_all(&mods_dest)?;
     } else if let Ok(metadata) = std::fs::symlink_metadata(&mods_dest)
@@ -282,25 +286,46 @@ pub fn link_profile_local_files<L: AsRef<Path>>(
         format!("could not find or read {path_display}")
     );
 
-    let save_path = local_path.as_ref().join("SaveData");
-
-    if save_path.try_exists()? && save_path.is_dir() && !save_path.with_extension("bak").exists() {
-        eprintln!(
-            "moving {} to {}...",
-            save_path.display(),
-            save_path.with_extension("bak").display()
-        );
-        dircpy::copy_dir(&save_path, save_path.with_extension("bak"))?;
+    let profile_path = PROFILES_DIR.join(profile.id.to_string());
+    if !profile_path.try_exists()? {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "profile folder does not exist",
+        ));
     }
 
-    std::fs::remove_dir_all(&save_path)?;
+    let link_profile_folder = |name: &str| -> Result<(), std::io::Error> {
+        let destination = local_path.as_ref().join(name);
+        let backup = destination.with_extension("bak");
+        if destination.try_exists()?
+            && !destination.is_symlink()
+            && destination.is_dir()
+            && !backup.exists()
+        {
+            eprintln!(
+                "Moving {} to {}...",
+                destination.display(),
+                backup.display()
+            );
+            std::fs::rename(&destination, backup)?;
+        }
 
-    let profile_save = PROFILES_DIR.join(profile.id.to_string()).join("SaveData");
-    if !profile_save.try_exists()? {
-        std::fs::create_dir(&profile_save)?;
-    }
+        std::fs::remove_dir_all(&destination)?;
 
-    files::link_dirs(profile_save, save_path)?;
+        let source = profile_path.join(name);
+        if !source.try_exists()? {
+            std::fs::create_dir(&source)?;
+        }
+
+        files::link_dirs(source, destination)?;
+
+        Ok(())
+    };
+
+    link_profile_folder(library::profile_folder::CHARACTER_POOL)?;
+    link_profile_folder(library::profile_folder::CONFIG)?;
+    link_profile_folder(library::profile_folder::PHOTOBOOTH)?;
+    link_profile_folder(library::profile_folder::SAVE_DATA)?;
 
     Ok(())
 }

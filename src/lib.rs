@@ -231,8 +231,8 @@ pub enum Message {
     ProfileRemoveItems(usize, Vec<u32>),
     ProfileSelected(usize),
     ProfileItemSelected(u32),
-    ProfileImportSaveRequested(usize),
-    ProfileViewSaveRequested(usize),
+    ProfileViewFolderRequested(usize, String),
+    ProfileImportFolderRequested(usize, String),
     ProfileImportCollectionRequested(Arc<Collection>),
     ActiveProfileSelected(String),
 
@@ -1809,6 +1809,22 @@ impl App {
                         .find(|i| !self.save.profiles.contains_key(i))
                         .expect("profile should never reasonably contain > usize::MAX items");
 
+                    let profile_path = PROFILES_DIR.join(id.to_string());
+                    let result: std::io::Result<()> = try {
+                        if let Ok(true) = profile_path.try_exists() {
+                            std::fs::remove_dir_all(&profile_path)?
+                        }
+                        for name in library::profile_folder::ALL.iter() {
+                            std::fs::create_dir(profile_path.join(name))?;
+                        }
+                    };
+                    if let Err(err) = result {
+                        return Task::done(Message::display_error(
+                            "Error Setting Up Profile",
+                            format!("Error attempting to set up new profile: {err:?}"),
+                        ));
+                    }
+
                     self.save.profiles.insert(
                         id,
                         library::Profile {
@@ -1827,12 +1843,6 @@ impl App {
                             .cloned()
                             .collect(),
                     );
-                    let remnants = PROFILES_DIR.join(id.to_string());
-                    if let Ok(true) = remnants.try_exists()
-                        && let Err(err) = std::fs::remove_dir_all(remnants)
-                    {
-                        eprintln!("Error deleting left-over profile folder: {err:?}");
-                    }
                 }
                 self.modal_stack.pop();
             }
@@ -1920,8 +1930,15 @@ impl App {
                     }
                 }
             }
-            Message::ProfileViewSaveRequested(id) => {
-                let path = PROFILES_DIR.join(id.to_string()).join("SaveData");
+            Message::ProfileViewFolderRequested(id, name) => {
+                if !library::profile_folder::ALL.contains(&name.as_str()) {
+                    return Task::done(Message::display_error(
+                        "Does Not Exist",
+                        "There is no such folder in a profile",
+                    ));
+                }
+
+                let path = PROFILES_DIR.join(id.to_string()).join(name);
 
                 if let Err(err) = opener::open(&path) {
                     return Task::done(Message::display_error(
@@ -1930,43 +1947,51 @@ impl App {
                     ));
                 }
             }
-            Message::ProfileImportSaveRequested(id) => {
+            Message::ProfileImportFolderRequested(id, name) => {
                 return Task::done(Message::SetBusy(true))
-                    .chain(Task::future(async move {
+                    .chain(Task::perform({
+                        let name = name.clone();
+                        async move {
                         if let Some(handle) = rfd::AsyncFileDialog::new()
-                            .set_title("Pick SaveData Folder")
+                            .set_title(format!("Pick {name} Folder") )
                             .pick_folder()
                             .await
                         {
                             let path = handle.path();
-                            if !path.join("profile.bin").exists() {
-                                return Message::display_error(
-                                    "Error Copying Save Files", 
-                                    format!("{} is missing file 'profile.bin', is this a valid XCOM2 save folder?", path.display())
-                                )
+
+                            let mut read_dir = path.read_dir()?;
+                            eyre::ensure!(read_dir.next().is_some(), "The folder that was selected is empty, import request will be disregarded.");
+
+                            match name.as_str() {
+                                library::profile_folder::CHARACTER_POOL => {
+                                    eyre::ensure!(path.join("DefaultCharacterPool.bin").try_exists()?, "The selected folder does not appear to contain a default character pool (missing 'DefaultCharacterPool.bin')");
+                                }
+                                // Realistically anything could go into the config folder, nothing to do
+                                library::profile_folder::CONFIG => {}
+                                library::profile_folder::PHOTOBOOTH => {
+                                    eyre::ensure!(path.join("PhotoboothData.x2").try_exists()?, "The selected folder does not appear to contain any photobooth data (missing 'PhotoboothData.x2')");
+                                }
+                                library::profile_folder::SAVE_DATA => {
+                                    eyre::ensure!(path.join("profile.bin").try_exists()?, "The selected folder does not appear to contain any save data (missing 'profile.bin')");
+                                },
+                                _ => {}
                             }
 
                             let profile_dir = PROFILES_DIR.join(id.to_string());
-                            let dest = profile_dir.join("SaveData");
-                            let res: Result<(), std::io::Error> = try {
-                                if dest.try_exists()? {
-                                    tokio::fs::remove_dir_all(&dest).await?;
-                                }
-                                tokio::fs::create_dir_all(&dest).await?;
-                            };
-
-                            if let Err(err) = res {
-                                return Message::display_error("Error Copying Save Files", format!("Failed to overwrite save:\n{err:?}"))
+                            let dest = profile_dir.join(name);
+                            if dest.try_exists()? {
+                                tokio::fs::remove_dir_all(&dest).await?;
                             }
+                            tokio::fs::create_dir_all(&dest).await?;
+                            dircpy::copy_dir(path, &dest)?;
 
-                            if let Err(err) = dircpy::copy_dir(path, &dest) {
-                                Message::display_error(
-                                    "Error Copying Save Files",
-                                    format!("An error occurred while copying save files from '{}' to '{}':\n{err:?}", path.display(), dest.display()),
-                                )
-                            } else {
-                                Message::None
-                            }
+                            Ok(())
+                        } else {
+                            Ok(())
+                        }
+                    }}, move |res| {
+                        if let Err(err) = res {
+                            Message::display_error(format!("Error Importing {name}"), format!("{err:?}"))
                         } else {
                             Message::None
                         }
@@ -2539,46 +2564,76 @@ impl App {
             container(
                 container(
                     column![
-                        row![
-                            text("Mods").size(20),
-                            horizontal_space(),
-                            button("View Save").on_press(Message::ProfileViewSaveRequested(profile.id)),
-                            tooltip!(
-                                button("Import Save").style(button::danger).on_press(Message::ProfileImportSaveRequested(profile.id)),
-                                "Note that this will overwrite any save data currently in the profile.",
-                            ),
+                        row(library::profile_folder::ALL.iter().map(|name| {
+                            button(text!("View {name}"))
+                                .on_press_with(|| {
+                                    Message::ProfileViewFolderRequested(
+                                        profile.id,
+                                        name.to_string(),
+                                    )
+                                })
+                                .into()
+                        }))
+                        .extend(library::profile_folder::ALL.iter().map(|name| {
+                            button(text!("Import {name}"))
+                                .on_press_with(|| {
+                                    Message::ProfileImportFolderRequested(
+                                        profile.id,
+                                        name.to_string(),
+                                    )
+                                })
+                                .style(button::secondary)
+                                .into()
+                        }))
+                        .push(
                             // TODO - add confirmation
                             button("Delete Profile")
                                 .style(button::danger)
                                 .on_press(Message::ProfileDeletePressed(profile.id)),
-                        ],
+                        )
+                        .wrap(),
+                        text("Mods").size(20),
                         scrollable(column(profile.items.keys().map(|id| {
                             let mut issues = vec![];
                             if !self.item_downloaded(*id) {
-                                issues.push("Missing: Mod is not downloaded (or found)".to_string());
+                                issues
+                                    .push("Missing: Mod is not downloaded (or found)".to_string());
                             }
 
                             issues.extend(
-                                profile.compatibility_issues.get(id).map(Vec::as_slice).unwrap_or_default().iter().map(|item| {
-                                    match item {
-                                        library::CompatibilityIssue::MissingWorkshop(_id, message) => {
+                                profile
+                                    .compatibility_issues
+                                    .get(id)
+                                    .map(Vec::as_slice)
+                                    .unwrap_or_default()
+                                    .iter()
+                                    .map(|item| match item {
+                                        library::CompatibilityIssue::MissingWorkshop(
+                                            _id,
+                                            message,
+                                        ) => {
                                             format!("Missing Workshop Dependency: {message}")
                                         }
                                         library::CompatibilityIssue::MissingRequired(dlc_name) => {
                                             format!("Missing Dependency: {dlc_name}")
-                                        },
+                                        }
                                         library::CompatibilityIssue::Incompatible(dlc_name) => {
                                             format!("Incompatible Mod: {dlc_name}")
-                                        },
-                                        library::CompatibilityIssue::Overlapping(name, provides) => {
-                                            format!("{name} Provides Same DLCNames: {}", provides.iter().join(", "))
-                                        },
+                                        }
+                                        library::CompatibilityIssue::Overlapping(
+                                            name,
+                                            provides,
+                                        ) => {
+                                            format!(
+                                                "{name} Provides Same DLCNames: {}",
+                                                provides.iter().join(", ")
+                                            )
+                                        }
                                         library::CompatibilityIssue::Unknown => {
                                             "Missing Info".to_string()
-                                        },
-                                    }
-                                }
-                            ));
+                                        }
+                                    }),
+                            );
 
                             let button_style = if let Some(sel_id) = profile.view_selected_item
                                 && sel_id == *id
@@ -2608,7 +2663,8 @@ impl App {
                                     button,
                                     column(issues.into_iter().map(|s| text(s).into())),
                                     tooltip::Position::Bottom,
-                                ).into()
+                                )
+                                .into()
                             } else {
                                 button.into()
                             }
