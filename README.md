@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![icon](assets/lxcomm_icon.svg)
+![icon](assets/lxcomm.svg)
 
 </div>
 
@@ -31,7 +31,42 @@ Although the project as it stands is in a usable-enough state for modding your g
 there are a lot of quality of life features that I still want to add (you can take a look at [Tracking Ideas](#tracking-ideas)) and there are likely lots of bugs that I've yet to uncover and fix.
 You use LXCOMM at your own risk (though bug reports are appreciated!)
 
-If you read all that and you've still decided that you want to at least try out LXCOMM, then feel free to read the [startup guide](https://github.com/PhantomShift/lxcomm/wiki/Startup-Guide).
+If you read all that and you've still decided that you want to at least try out LXCOMM,
+then feel free to install and read the [startup guide](https://github.com/PhantomShift/lxcomm/wiki/Startup-Guide).
+
+## Installation
+
+### Releases
+
+Binaries for versioned releases of supported platforms are available to download at [Releases](https://github.com/PhantomShift/lxcomm/releases/latest).
+
+### Package Manager
+
+As of writing, LXCOMM is only packaged in the AUR.
+If anyone is interested in maintaining packages elsewhere,
+please feel free to open an issue for communicating any needs or wants.
+
+```bash
+# Replace `paru` with your AUR helper of choice
+# From source
+paru -Syu lxcomm
+# Binary-only package
+paru -Syu lxcomm-bin
+```
+
+### Manual Installation
+
+```bash
+# Minimal one-step installation
+cargo install --git https://github.com/phantomshift/lxcomm.git
+
+# For Linux desktop integration (user-local)
+# Ensure ~/.cargo/bin is included in your path
+git clone https://github.com/phantomshift/lxcomm.git
+cargo install --path lxcomm
+cp lxcomm/dist/lxcomm.desktop ~/.local/share/applications/
+cp lxcomm/assets/lxcomm.svg ~/.local/share/icons/
+```
 
 ## Other Platforms
 
