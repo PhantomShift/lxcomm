@@ -56,16 +56,15 @@ paru -Syu lxcomm-bin
 
 ### Manual Installation
 
-```bash
-# Minimal one-step installation
-cargo install --git https://github.com/phantomshift/lxcomm.git
+Specifically for a local Linux user installation. Requires [just](https://github.com/casey/just).
 
-# For Linux desktop integration (user-local)
+```bash
 # Ensure ~/.cargo/bin is included in your path
 git clone https://github.com/phantomshift/lxcomm.git
-cargo install --path lxcomm
-cp lxcomm/dist/lxcomm.desktop ~/.local/share/applications/
-cp lxcomm/assets/lxcomm.svg ~/.local/share/icons/
+cd lxcomm
+just install-local
+# For uninstalling
+# just uninstall-local
 ```
 
 ## Other Platforms
