@@ -3184,7 +3184,7 @@ checksum = "234cf4f4a04dc1f57e24b96cc0cd600cf2af460d4161ac5ecdd0af8e1f3b2a38"
 
 [[package]]
 name = "lxcomm"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "apply",
