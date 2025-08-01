@@ -6,7 +6,7 @@
 
 </div>
 
-Mod browser, downloader and manager made specifically for non-Steam versions of XCOM2(WOTC) on Linux.
+Mod browser, downloader and manager made specifically for non-Steam versions of XCOM2 (War of the Chosen) on Linux.
 
 ## Startup Guide
 
@@ -155,16 +155,17 @@ In no particular order:
 - [x] ~~(Blocked on [#1](https://github.com/PhantomShift/lxcomm/issues/1)) Check for updates without having to invoke downloads on all mods (build manifest file from scratch and then try running `steamcmd +workshop_status`?)~~ Updates are now checked via the Steam Web API.
 - [x] Automatically find game installations and folders (using [walkdir](https://github.com/BurntSushi/walkdir)?)
 - [x] Options for ranking search results in browsing
-- [ ] Per-profile character pools
+- [x] Per-profile character pools
 - [x] Read most recent game logs
 - [x] Recurse full mod dependency tree when checking for missing dependencies
-- [ ] Support manually downloaded mods
+- [x] Support manually downloaded mods
 - [x] Support workshop collections
-- [ ] Copying/imporing+exporting profiles
+- [ ] Copying/importing+exporting profiles
 - [ ] Disk cache trimming
 - [x] ~~Ability to enter workshop ID directly for browsing or downloading (due to unreliable browsing results)~~ Search results should now be all-inclusive
 - [ ] Investigate controller navigation in iced (or libcosmic) (for the Steam Deck gamers)
 
 ## License
 
-lxcomm is dual-licensed under [MIT](LICENSE-MIT) or [Apache License 2.0](LICENSE-APACHE) at your choice.
+lxcomm is dual-licensed under [MIT](LICENSE-MIT) or [Apache License 2.0](LICENSE-APACHE) at a given contributor's choice,
+falling back to Apache 2.0 unless otherwise stated.
