@@ -2968,7 +2968,8 @@ impl App {
                     .on_press(Message::AsyncChooseResolve(*key, i))
                     .into()
             })))
-            .max_height(500.0)
+            .max_height(512.0)
+            .max_width(512.0)
             .width(Fill)
             .into()
     }
