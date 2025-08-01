@@ -2685,7 +2685,7 @@ impl App {
                             } else {
                                 button::primary
                             };
-                            let missing_text = if missing { "" } else { " (MISSING)" };
+                            let missing_text = if missing { " (MISSING)" } else { "" };
                             let button = if let Some(details) = self.file_cache.get_details(id) {
                                 button(text!("{} ({id}){missing_text}", details.title()))
                                     .on_press_with(|| Message::ProfileItemSelected(id.clone()))
