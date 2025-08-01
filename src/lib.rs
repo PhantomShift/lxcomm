@@ -12,7 +12,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     hash::Hash,
     ops::Not,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, LazyLock},
     time::Duration,
@@ -35,12 +35,13 @@ use iced::{
         channel::mpsc::{Receiver, Sender},
     },
     widget::{
-        self, Stack, button, checkbox, column, combo_box, container, horizontal_space, image,
-        markdown, opaque, progress_bar, rich_text, row, scrollable, span, stack, text, text_editor,
-        text_input, toggler, tooltip, vertical_rule, vertical_space,
+        self, Stack, button, checkbox, column, combo_box, container, horizontal_rule,
+        horizontal_space, image, markdown, opaque, progress_bar, rich_text, row, scrollable, span,
+        stack, text, text_editor, text_input, toggler, tooltip, vertical_rule, vertical_space,
     },
 };
 use iced_aw::{card, widget::LabeledFrame};
+use indexmap::IndexSet;
 use itertools::Itertools;
 use ringmap::RingMap;
 use secrecy::{ExposeSecret, SecretString};
@@ -51,6 +52,7 @@ use strum::{Display, EnumIter, IntoEnumIterator};
 use crate::{
     browser::WorkshopBrowser,
     collections::{Collection, CollectionsMessage, CollectionsState, ImageSource},
+    extensions::Truncatable,
     files::ModDetails,
     platform::symbols,
     widgets::{AsyncDialog, AsyncDialogField},
@@ -147,6 +149,9 @@ pub enum SettingsMessage {
     ResetToDefault,
     ResetToSaved,
     Save,
+    AddModDirectory,
+    AddModDirectoryConfirmed(PathBuf),
+    RemoveModDirectory(usize),
     #[default]
     None,
 }
@@ -442,7 +447,10 @@ struct AppSave {
     game_directory: Option<PathBuf>,
     local_directory: Option<PathBuf>,
     launch_command: Option<String>,
+    #[serde(default)]
     launch_args: Vec<(String, String)>,
+    #[serde(default)]
+    local_mod_dirs: IndexSet<PathBuf>,
 }
 
 pub struct App {
@@ -475,8 +483,6 @@ pub struct App {
     cancel_download_handles: HashMap<u32, iced::task::Handle>,
     downloaded: BTreeMap<u32, PathBuf>,
     local: BTreeSet<PathBuf>,
-    // Potential todo: cache results? Doesn't seem strictly necessary
-    metadata: BTreeMap<ModId, xcom_mod::ModMetadata>,
     library: library::Library,
     file_cache: files::Cache,
     markup_cache: markup::MarkupCache,
@@ -747,7 +753,6 @@ impl App {
             cancel_download_handles: HashMap::new(),
             downloaded: BTreeMap::new(),
             local: BTreeSet::new(),
-            metadata: BTreeMap::new(),
             library: library::Library::default(),
             file_cache: files::Cache::default(),
             markup_cache: markup::MarkupCache::default(),
@@ -793,7 +798,11 @@ impl App {
             Task::none()
         };
 
+        // Potential TODO: turn this into an asynchronous task to prevent UI lockup on extremely large libraries
         app.scan_downloads();
+        for path in app.save.local_mod_dirs.clone() {
+            app.scan_mods(&path, false);
+        }
 
         Ok((app, Task::batch([auto_grab_api_key, auto_login])))
     }
@@ -1040,6 +1049,8 @@ impl App {
                         }
                         Message::None
                     });
+                } else if let Some(ModDetails::Local(data)) = self.file_cache.get_details(&id) {
+                    self.markup_cache.cache_markup(data.description);
                 }
             }
             Message::BrowseEditQuery(query) => self.browsing_query.query = query,
@@ -1767,11 +1778,7 @@ impl App {
                             .entry(item.clone())
                             .or_insert_with(library::LibraryItemSettings::default);
                     }
-                    profile.update_compatibility_issues(
-                        self.file_cache.clone(),
-                        &self.metadata,
-                        &self.library,
-                    );
+                    profile.update_compatibility_issues(self.file_cache.clone(), &self.library);
                 }
                 self.modal_stack.pop();
             }
@@ -1866,11 +1873,7 @@ impl App {
                             .map(|id| (id, library::LibraryItemSettings::default())),
                     );
 
-                    profile.update_compatibility_issues(
-                        self.file_cache.clone(),
-                        &self.metadata,
-                        &self.library,
-                    );
+                    profile.update_compatibility_issues(self.file_cache.clone(), &self.library);
                 });
             }
             Message::ProfileDeletePressed(id) => {
@@ -1900,11 +1903,7 @@ impl App {
             Message::ProfileRemoveItems(id, items) => {
                 self.save.profiles.entry(id).and_modify(|profile| {
                     profile.items.retain(|id, _| !items.contains(id));
-                    profile.update_compatibility_issues(
-                        self.file_cache.clone(),
-                        &self.metadata,
-                        &self.library,
-                    );
+                    profile.update_compatibility_issues(self.file_cache.clone(), &self.library);
                 });
 
                 if let Some(selected) = self.selected_profile_id
@@ -2124,7 +2123,7 @@ impl App {
                     if let Err(err) = loading::bootstrap_load_profile(
                         profile,
                         &self.settings.download_directory,
-                        &self.metadata,
+                        self.file_cache.get_mod_metadata_list(),
                         destination,
                         local_path,
                     ) {
@@ -2571,6 +2570,47 @@ impl App {
                     ));
                 };
             }
+
+            SettingsMessage::AddModDirectory => {
+                return Task::done(Message::SetBusy(true))
+                    .chain(Task::future(async move {
+                        if let Some(handle) = rfd::AsyncFileDialog::new()
+                            .set_title("Pick Local Mod Directory")
+                            .pick_folder()
+                            .await
+                        {
+                            SettingsMessage::AddModDirectoryConfirmed(handle.path().to_path_buf())
+                                .into()
+                        } else {
+                            Message::None
+                        }
+                    }))
+                    .chain(Task::done(Message::SetBusy(false)));
+            }
+            SettingsMessage::AddModDirectoryConfirmed(path) => {
+                if self.save.local_mod_dirs.insert(path.clone()) {
+                    self.scan_mods(&path, false);
+                }
+            }
+            SettingsMessage::RemoveModDirectory(index) => {
+                if let Some(path) = self.save.local_mod_dirs.shift_remove_index(index) {
+                    let res: std::io::Result<()> = try {
+                        for entry in path.read_dir()? {
+                            let entry = entry?;
+                            let id = ModId::Local(entry.path());
+                            self.library.items.remove(&id);
+                            self.local.remove(&entry.path());
+                            self.file_cache.invalidate_details(&id);
+                        }
+                    };
+                    if let Err(err) = res {
+                        eprintln!(
+                            "Error attempting to clear local mod information from session: {err:?}"
+                        );
+                    }
+                }
+            }
+
             SettingsMessage::None => (),
         }
 
@@ -2686,7 +2726,7 @@ impl App {
                                 button::primary
                             };
                             let missing_text = if missing { " (MISSING)" } else { "" };
-                            let button = if let Some(details) = self.file_cache.get_details(id) {
+                            let select = if let Some(details) = self.file_cache.get_details(id) {
                                 button(text!("{} ({id}){missing_text}", details.title()))
                                     .on_press_with(|| Message::ProfileItemSelected(id.clone()))
                             } else {
@@ -2696,14 +2736,19 @@ impl App {
                             .width(Fill);
 
                             if !issues.is_empty() {
-                                tooltip!(
-                                    button,
-                                    column(issues.into_iter().map(|s| text(s).into())),
-                                    tooltip::Position::Bottom,
-                                )
+                                row![
+                                    button("X").style(button::danger).on_press_with(|| {
+                                        Message::ProfileRemoveItems(profile.id, vec![id.clone()])
+                                    }),
+                                    tooltip!(
+                                        select,
+                                        column(issues.into_iter().map(|s| text(s).into())),
+                                        tooltip::Position::Bottom,
+                                    )
+                                ]
                                 .into()
                             } else {
-                                button.into()
+                                select.into()
                             }
                         })))
                         .height(128),
@@ -3024,7 +3069,25 @@ impl App {
             row([label, horizontal_space().into(), editor])
                 .height(32)
                 .into()
-        }));
+        }))
+        .push(horizontal_rule(2))
+        .push(text("Local Mod Directories"))
+        .extend(
+            self.save
+                .local_mod_dirs
+                .iter()
+                .enumerate()
+                .map(|(index, path)| {
+                    row![
+                        text_input("", &path.display().to_string()).on_input(|_| Message::None),
+                        button("X")
+                            .style(button::danger)
+                            .on_press(SettingsMessage::RemoveModDirectory(index).into())
+                    ]
+                    .into()
+                }),
+        )
+        .push(button("Add Directory").on_press(SettingsMessage::AddModDirectory.into()));
 
         let col = col.push(vertical_space());
         col.push(row![
@@ -3233,12 +3296,13 @@ impl App {
             } else {
                 text::default
             };
+
             grid = grid.push(iced_aw::grid_row!(
                 checkbox("", item.selected)
                     .on_toggle(move |toggle| Message::LibraryToggleItem(id.clone(), toggle)),
                 button(symbols::eye()).on_press_with(|| Message::SetViewingItem(id.clone())),
                 tooltip(
-                    rich_text([span(id.get_hash())
+                    rich_text([span(id.get_hash().truncated_overflow(12).to_string())
                         .link(id.get_hash())
                         .underline(missing.is_some())])
                     .on_link_click(|link: String| {
@@ -3259,10 +3323,10 @@ impl App {
                 ),
                 text(&item.title).style(text_style),
                 text(
-                    self.metadata
-                        .get(id)
-                        .map(|data| data.dlc_name.as_str())
-                        .unwrap_or("UNKNOWN")
+                    self.file_cache
+                        .get_mod_metadata(id)
+                        .map(|data| data.dlc_name.clone())
+                        .unwrap_or("UNKNOWN".to_string())
                 )
                 .style(text_style),
                 text(item.path.display().to_string()).style(text_style),
@@ -3821,17 +3885,24 @@ impl App {
         ])
     }
 
+    fn scan_downloads(&mut self) {
+        self.scan_mods(
+            &files::get_all_items_directory(&self.settings.download_directory),
+            true,
+        );
+    }
+
     // Potential TODO: If this ends up being an expensive operation on large mod libraries,
     // add option to skip checking already included files or turn it into a stream
-    fn scan_downloads(&mut self) {
-        self.downloaded.clear();
-        let dir = files::get_all_items_directory(&self.settings.download_directory);
+    fn scan_mods(&mut self, directory: &Path, is_workshop: bool) {
+        // self.downloaded.clear();
+        // let dir = files::get_all_items_directory(&self.settings.download_directory);
         // Assume fresh state where nothing has been downloaded before
-        if !dir.exists() {
+        if !directory.exists() {
             return;
         }
 
-        match std::fs::read_dir(&dir) {
+        match std::fs::read_dir(directory) {
             Ok(read) => {
                 for entry in read {
                     match entry {
@@ -3870,7 +3941,9 @@ impl App {
                                             data.published_file_id = id;
                                         }
 
-                                        if *file_name != *data.published_file_id.to_string() {
+                                        if is_workshop
+                                            && *file_name != *data.published_file_id.to_string()
+                                        {
                                             eprintln!(
                                                 "Found a mod that has mismatched IDs: {} ({}, expected {})",
                                                 data.title,
@@ -3883,16 +3956,33 @@ impl App {
                                             data.published_file_id = file_name.to_string_lossy().parse::<u32>()
                                                 .expect("steam workshop items should be contained in a folder named by its ID");
                                         }
-                                        // TODO - Make scan_downloads generic over source (workshop + local)
-                                        let workshkop_id = ModId::Workshop(data.published_file_id);
+
+                                        // Heuristically override description with readme for local files
+                                        if !is_workshop
+                                            && let Ok(description) =
+                                                std::fs::read_to_string(entry.join("ReadMe.txt"))
+                                            && description.lines().count() > 1
+                                        {
+                                            data.description = description;
+                                        }
+
+                                        let id = if is_workshop {
+                                            ModId::Workshop(data.published_file_id)
+                                        } else {
+                                            ModId::Local(entry.clone())
+                                        };
                                         let compat = self
                                             .library
                                             .compatibility
-                                            .entry(workshkop_id.clone())
+                                            .entry(id.clone())
                                             .or_default();
                                         compat.extend_with(xcom_mod::scan_compatibility(&entry));
-                                        self.downloaded.insert(data.published_file_id, entry);
-                                        self.metadata.insert(workshkop_id.clone(), data);
+                                        if is_workshop {
+                                            self.downloaded.insert(data.published_file_id, entry);
+                                        } else {
+                                            self.local.insert(entry);
+                                        }
+                                        self.file_cache.update_mod_metadata(id.clone(), data);
                                     }
                                     Err(err) => {
                                         eprintln!("Error parsing XComMod metadata file: {err:?}")
@@ -3904,7 +3994,7 @@ impl App {
                         }
                         Ok(_) => (),
                         Err(err) => {
-                            eprintln!("Error scanning files in {}: {err:?}", dir.display());
+                            eprintln!("Error scanning files in {}: {err:?}", directory.display());
                         }
                     }
                 }
@@ -3917,8 +4007,23 @@ impl App {
             }
         }
 
-        for (id, path) in self.downloaded.iter() {
-            let id = ModId::Workshop(*id);
+        // I don't know if there's a cleaner way to do this
+        let iter: Box<dyn Iterator<Item = (ModId, &PathBuf)>> = if is_workshop {
+            Box::new(
+                self.downloaded
+                    .iter()
+                    .map(|(id, path)| (ModId::Workshop(*id), path)),
+            )
+        } else {
+            Box::new(
+                self.local
+                    .iter()
+                    .filter(|path| path.starts_with(directory))
+                    .map(|path| (ModId::Local(path.to_path_buf()), path)),
+            )
+        };
+
+        for (id, path) in iter.into_iter() {
             if let Some(details) = self.file_cache.get_details(&id) {
                 // Raw read
                 let mut metadata = metadata::read_in(path).unwrap_or_default();
@@ -3952,13 +4057,9 @@ impl App {
         }
 
         self.library
-            .update_missing_dependencies(self.file_cache.clone(), &self.metadata);
+            .update_missing_dependencies(self.file_cache.clone());
         for profile in self.save.profiles.values_mut() {
-            profile.update_compatibility_issues(
-                self.file_cache.clone(),
-                &self.metadata,
-                &self.library,
-            );
+            profile.update_compatibility_issues(self.file_cache.clone(), &self.library);
         }
     }
 

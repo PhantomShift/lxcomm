@@ -198,10 +198,11 @@ impl Display for SizeDisplay {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Cache {
     details_cache: MokaCache<u32, Arc<query_files::File>>,
-    metadata_cache: MokaCache<PathBuf, metadata::ProgramMetadata>,
+    program_metadata_cache: MokaCache<PathBuf, metadata::ProgramMetadata>,
+    mod_metadata_cache: Arc<dashmap::DashMap<ModId, xcom_mod::ModMetadata>>,
 }
 
 #[derive(Debug, Clone)]
@@ -274,8 +275,32 @@ impl Cache {
                     }
                 })
                 .map(ModDetails::Workshop),
-            ModId::Local(path) => todo!(),
+            id @ ModId::Local(_) => self
+                .mod_metadata_cache
+                .get(id)
+                .map(|entry| entry.to_owned())
+                .map(ModDetails::Local),
         }
+    }
+
+    pub fn invalidate_details(&self, id: &ModId) {
+        match id {
+            ModId::Workshop(id) => self.details_cache.invalidate(id),
+            ModId::Local(_) => {
+                self.mod_metadata_cache.remove(id);
+            }
+        }
+    }
+
+    pub fn update_mod_metadata(&self, id: ModId, data: xcom_mod::ModMetadata) {
+        self.mod_metadata_cache.insert(id, data);
+    }
+
+    pub fn get_mod_metadata(
+        &'_ self,
+        id: &ModId,
+    ) -> Option<dashmap::mapref::one::Ref<'_, ModId, xcom_mod::ModMetadata>> {
+        self.mod_metadata_cache.get(id)
     }
 
     pub fn update_metadata<P: AsRef<Path>>(
@@ -284,15 +309,20 @@ impl Cache {
         data: metadata::ProgramMetadata,
     ) -> Result<(), eyre::Error> {
         data.save_in(path.as_ref())?;
-        self.metadata_cache
+        self.program_metadata_cache
             .insert(path.as_ref().to_path_buf(), data);
         Ok(())
     }
 
     pub fn get_metadata<P: AsRef<Path>>(&self, path: P) -> metadata::ProgramMetadata {
-        self.metadata_cache.get_with_by_ref(path.as_ref(), || {
-            metadata::read_in(path.as_ref()).unwrap_or_default()
-        })
+        self.program_metadata_cache
+            .get_with_by_ref(path.as_ref(), || {
+                metadata::read_in(path.as_ref()).unwrap_or_default()
+            })
+    }
+
+    pub fn get_mod_metadata_list(&self) -> &dashmap::DashMap<ModId, xcom_mod::ModMetadata> {
+        &self.mod_metadata_cache
     }
 }
 
@@ -300,7 +330,8 @@ impl Default for Cache {
     fn default() -> Self {
         Self {
             details_cache: MokaCache::new(1024),
-            metadata_cache: MokaCache::new(1024),
+            program_metadata_cache: MokaCache::new(1024),
+            mod_metadata_cache: Arc::new(dashmap::DashMap::new()),
         }
     }
 }

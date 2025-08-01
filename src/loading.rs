@@ -1,7 +1,6 @@
-use std::{
-    collections::{BTreeMap, HashSet},
-    path::Path,
-};
+use std::{collections::HashSet, path::Path};
+
+use dashmap::DashMap;
 
 use crate::{
     ACTIVE_CONFIG_DIR, ACTIVE_MODS_DIR, PROFILES_DIR, files,
@@ -33,7 +32,7 @@ pub fn build_active_config<D: AsRef<Path>>(
             continue;
         }
 
-        let id_string = item.to_string();
+        let id_string = item.get_hash();
         let item_config = ACTIVE_CONFIG_DIR.join(&id_string);
         std::fs::create_dir_all(&item_config)?;
         let mut custom_configs = HashSet::new();
@@ -84,7 +83,7 @@ pub fn build_active_config<D: AsRef<Path>>(
 
 pub fn build_mod_environment<D: AsRef<Path>>(
     download_dir: D,
-    metadata: &BTreeMap<ModId, xcom_mod::ModMetadata>,
+    metadata: &DashMap<ModId, xcom_mod::ModMetadata>,
     profile: &Profile,
 ) -> Result<(), std::io::Error> {
     build_active_config(download_dir.as_ref(), profile)?;
@@ -103,7 +102,7 @@ pub fn build_mod_environment<D: AsRef<Path>>(
             ));
         };
 
-        let id_string = id.to_string();
+        let id_string = id.get_hash();
         let files = files::get_mod_directory(download_dir.as_ref(), id);
 
         let dest = ACTIVE_MODS_DIR.join(&data.dlc_name);
@@ -153,7 +152,7 @@ pub fn build_mod_environment<D: AsRef<Path>>(
 
 pub fn write_mod_list<W: std::io::Write>(
     profile: &Profile,
-    metadata: &BTreeMap<ModId, xcom_mod::ModMetadata>,
+    metadata: &DashMap<ModId, xcom_mod::ModMetadata>,
     mut writer: W,
 ) -> Result<(), std::io::Error> {
     writeln!(writer, "[Engine.XComModOptions]")?;
@@ -173,7 +172,7 @@ pub fn write_mod_list<W: std::io::Write>(
 
 pub fn mod_list(
     profile: &Profile,
-    metadata: &BTreeMap<ModId, xcom_mod::ModMetadata>,
+    metadata: &DashMap<ModId, xcom_mod::ModMetadata>,
 ) -> Result<String, std::io::Error> {
     let mut bytes = Vec::new();
     write_mod_list(profile, metadata, &mut bytes)?;
@@ -184,7 +183,7 @@ pub fn mod_list(
 
 pub fn link_mod_environment<D: AsRef<Path>>(
     profile: &Profile,
-    metadata: &BTreeMap<ModId, xcom_mod::ModMetadata>,
+    metadata: &DashMap<ModId, xcom_mod::ModMetadata>,
     destination: D,
 ) -> Result<(), std::io::Error> {
     if !ACTIVE_MODS_DIR.try_exists()? {
@@ -333,7 +332,7 @@ pub fn link_profile_local_files<L: AsRef<Path>>(
 pub fn bootstrap_load_profile<DL: AsRef<Path>, DS: AsRef<Path>, L: AsRef<Path>>(
     profile: &Profile,
     download_dir: DL,
-    metadata: &BTreeMap<ModId, xcom_mod::ModMetadata>,
+    metadata: &DashMap<ModId, xcom_mod::ModMetadata>,
     destination: DS,
     local_path: L,
 ) -> Result<(), std::io::Error> {

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     fmt::Display,
     io::BufRead,
     path::{Path, PathBuf},
@@ -8,7 +8,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::library::Library;
+use crate::{files, library::Library};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -150,11 +150,7 @@ pub fn scan_compatibility(folder: &Path) -> ModCompatibility {
     compat
 }
 
-pub fn get_provided_mods<'a, I>(
-    ids: I,
-    metadata: &BTreeMap<ModId, ModMetadata>,
-    library: &Library,
-) -> BTreeSet<String>
+pub fn get_provided_mods<'a, I>(ids: I, cache: files::Cache, library: &Library) -> BTreeSet<String>
 where
     I: IntoIterator<Item = &'a ModId>,
 {
@@ -162,19 +158,18 @@ where
         .flat_map(|id| {
             let mut provided = BTreeSet::new();
             if let Some(compat) = library.compatibility.get(id) {
-                provided.extend(compat.ignore_required.iter());
+                provided.extend(compat.ignore_required.iter().cloned());
             }
-            if let Some(data) = metadata.get(id) {
-                provided.insert(&data.dlc_name);
+            if let Some(data) = cache.get_mod_metadata(id) {
+                provided.insert(data.dlc_name.clone());
             }
 
             provided
         })
-        .cloned()
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, strum::EnumIs)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, strum::EnumIs)]
 #[serde(untagged)]
 pub enum ModId {
     // Potential TODO - steam IDs can actually be up to 64 bits,

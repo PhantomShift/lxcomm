@@ -123,13 +123,10 @@ impl Library {
         }
     }
 
-    pub fn update_missing_dependencies(
-        &mut self,
-        cache: Cache,
-        metadata: &BTreeMap<ModId, xcom_mod::ModMetadata>,
-    ) {
+    pub fn update_missing_dependencies(&mut self, cache: Cache) {
         let mut all_missing = BTreeMap::new();
-        let provided = xcom_mod::get_provided_mods(self.items.keys(), metadata, self);
+        let provided = xcom_mod::get_provided_mods(self.items.keys(), cache.clone(), self);
+        let metadata = cache.get_mod_metadata_list();
         for id in self.items.keys() {
             let mut missing = vec![];
             if let Some(compat) = self.compatibility.get(id) {
@@ -145,9 +142,9 @@ impl Library {
                 missing.extend(info.children.iter().filter_map(|child| {
                     if let Ok(child_id) =
                         child.published_file_id.parse::<u32>().map(ModId::Workshop)
-                        && !metadata
-                            .iter()
-                            .any(|(id, data)| id == &child_id && provided.contains(&data.dlc_name))
+                        && !metadata.iter().any(|entry| {
+                            entry.key() == &child_id && provided.contains(&entry.dlc_name)
+                        })
                     {
                         Some(format!(
                             "{} ({child_id})",
@@ -211,14 +208,10 @@ impl Profile {
         missing
     }
 
-    pub fn update_compatibility_issues(
-        &mut self,
-        cache: Cache,
-        metadata: &BTreeMap<ModId, xcom_mod::ModMetadata>,
-        library: &Library,
-    ) {
+    pub fn update_compatibility_issues(&mut self, cache: Cache, library: &Library) {
         let mut all = BTreeMap::new();
-        let provided = xcom_mod::get_provided_mods(self.items.keys(), metadata, library);
+        let provided = xcom_mod::get_provided_mods(self.items.keys(), cache.clone(), library);
+        let metadata = cache.get_mod_metadata_list();
 
         for id in self.items.keys() {
             if let Some(compat) = library.compatibility.get(id) {
@@ -241,10 +234,10 @@ impl Profile {
                         .map(CompatibilityIssue::Incompatible),
                 );
 
-                if let Some(data) = metadata.get(id) {
+                if let Some(data) = cache.get_mod_metadata(id) {
                     issues.extend(self.items.keys().filter_map(|other_id| {
                         if id != other_id {
-                            if let Some(other) = metadata.get(other_id)
+                            if let Some(other) = cache.get_mod_metadata(other_id)
                                 && data.dlc_name == other.dlc_name
                             {
                                 Some(CompatibilityIssue::Overlapping(
@@ -260,8 +253,8 @@ impl Profile {
                                 if intersect.is_empty() {
                                     None
                                 } else {
-                                    let conflict = metadata
-                                        .get(other_id)
+                                    let conflict = cache
+                                        .get_mod_metadata(other_id)
                                         .map(|other| {
                                             format!("{} ({})", other.title, other.published_file_id)
                                         })
@@ -282,8 +275,8 @@ impl Profile {
                         if let Ok(child_id) =
                             child.published_file_id.parse::<u32>().map(ModId::Workshop)
                             && !self.items.contains_key(&child_id)
-                            && !metadata.iter().any(|(id, data)| {
-                                id == &child_id && provided.contains(&data.dlc_name)
+                            && !metadata.iter().any(|entry| {
+                                entry.key() == &child_id && provided.contains(&entry.dlc_name)
                             })
                         {
                             CompatibilityIssue::MissingWorkshop(

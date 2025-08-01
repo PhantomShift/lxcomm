@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use steam_rs;
 
 use crate::{files, xcom_mod};
@@ -107,5 +109,46 @@ where
             .collect::<Vec<_>>();
 
         c.join("&")
+    }
+}
+
+pub trait Truncatable<'a> {
+    type Slice: 'a + ?Sized + ToOwned;
+    const OVERFLOW: &'a Self::Slice;
+
+    fn truncated(&'a self, max: usize) -> Cow<'a, Self::Slice>;
+    fn truncated_overflow(&'a self, max: usize) -> Cow<'a, Self::Slice>;
+}
+
+impl<'a, S> Truncatable<'a> for S
+where
+    S: AsRef<str>,
+{
+    type Slice = str;
+    const OVERFLOW: &'a Self::Slice = "...";
+
+    fn truncated(&'a self, max: usize) -> Cow<'a, str> {
+        if self.as_ref().len() > max {
+            let mut s = String::from(self.as_ref());
+            let mut peek = s.char_indices().peekable();
+            while peek.next_if(|(id, _)| *id < max).is_some() {
+                peek.next();
+            }
+            let index = peek.next().map(|(i, _)| i).unwrap_or_default();
+            s.truncate(index);
+            Cow::Owned(s)
+        } else {
+            Cow::Borrowed(self.as_ref())
+        }
+    }
+
+    fn truncated_overflow(&'a self, max: usize) -> Cow<'a, Self::Slice> {
+        match self.truncated(max) {
+            Cow::Owned(mut s) => {
+                s.push_str(Self::OVERFLOW);
+                Cow::Owned(s)
+            }
+            borrowed @ Cow::Borrowed(_) => borrowed,
+        }
     }
 }

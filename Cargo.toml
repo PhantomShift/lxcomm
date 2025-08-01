@@ -56,6 +56,8 @@ governor = "0.10.0"
 # https://github.com/wezterm/wezterm/commit/9d83458632640e662e3bac6d1d693e4a0cad6e2a
 # Changes to portable-pty as a whole since 0.8.1 seem largely inconsequential
 portable-pty = "0.8.1"
+indexmap = { version = "2.10.0", features = ["serde"] }
+dashmap = "6.1.0"
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 iced_fonts = { git = "https://github.com/Redhawk18/iced_fonts.git", version = "0.2.0", features = ["fontawesome"], rev = "982eb5ac9a02629cc9af824e3816376e4f52fc03" }
