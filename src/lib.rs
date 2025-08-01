@@ -4283,7 +4283,7 @@ pub fn main() -> eyre::Result<()> {
 
     let result = {
         let icon = iced::window::icon::from_file_data(
-            include_bytes!("../assets/lxcomm_icon64.png"),
+            include_bytes!("../assets/lxcomm_64x64.png"),
             Some(iced::advanced::graphics::image::image_rs::ImageFormat::Png),
         )?;
 
