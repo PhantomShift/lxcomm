@@ -97,6 +97,7 @@ In no particular order:
 - [ ] Disk cache trimming
 - [x] ~~Ability to enter workshop ID directly for browsing or downloading (due to unreliable browsing results)~~ Search results should now be all-inclusive
 - [ ] Investigate controller navigation in iced (or libcosmic) (for the Steam Deck gamers)
+- [ ] Make profile page widgets resizable
 
 ## License
 
