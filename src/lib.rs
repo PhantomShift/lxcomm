@@ -178,7 +178,6 @@ pub enum Message {
     ApiKeyRequestUpdate(String),
     ApiKeySubmit,
 
-    SetApiKey(String),
     SetBrowsePage(u32),
     SetViewingItem(ModId),
     BrowseEditQuery(String),
@@ -567,7 +566,8 @@ struct AppSettingsTimePreview;
 #[derive(Debug, Reflect)]
 struct AppSettingsFlatpakLocked;
 
-#[derive(Debug, Reflect, PartialEq, Serialize, Deserialize, Clone)]
+#[derive(Derivative, Reflect, PartialEq, Serialize, Deserialize, Clone)]
+#[derivative(Debug)]
 #[serde(default)]
 struct AppSettings {
     #[reflect(@AppSettingsLabel("Download Directory"))]
@@ -620,6 +620,11 @@ although this will also retry if any other errors occur. Set this to a higher va
     #[reflect(@AppSettingsUnsignedRange { min: 0, max: 604800 })]
     #[reflect(@AppSettingsTimePreview)]
     steam_webapi_cache_lifetime: u32,
+    #[reflect(@AppSettingsLabel("Steam Web API: API Key"))]
+    #[reflect(@AppSettingEditor::SecretInput)]
+    #[serde(skip)]
+    #[derivative(Debug = "ignore")]
+    steam_webapi_api_key: String,
 }
 
 static APP_SETTINGS_INFO: LazyLock<&StructInfo> = LazyLock::new(|| {
@@ -646,6 +651,7 @@ impl Default for AppSettings {
 
             steam_webapi_save_api_key: false,
             steam_webapi_cache_lifetime: 86400,
+            steam_webapi_api_key: Default::default(),
         }
     }
 }
@@ -771,6 +777,8 @@ impl App {
 
             Ok(key) if key.is_empty() => Task::done(Message::ApiKeyRequest),
             Ok(key) => {
+                app.settings.steam_webapi_api_key = key.clone();
+                app.settings_editing.steam_webapi_api_key = key.clone();
                 app.api_key = SecretString::from(key);
                 if app.settings.check_updates_on_startup {
                     Task::done(Message::LibraryForceCheckOutdated)
@@ -948,6 +956,8 @@ impl App {
 
             Message::ApiKeyRequest => self.modal_stack.push(AppModal::ApiKeyRequest),
             Message::ApiKeyRequestUpdate(key) => {
+                self.settings.steam_webapi_api_key = key.clone();
+                self.settings_editing.steam_webapi_api_key = key.clone();
                 self.api_key = SecretString::from(key);
             }
             Message::ApiKeySubmit => {
@@ -976,9 +986,6 @@ impl App {
                         });
                     }
                 }
-            }
-            Message::SetApiKey(key) => {
-                self.api_key = SecretString::from(key);
             }
 
             Message::SetBrowsePage(new) => {
@@ -2531,7 +2538,13 @@ impl App {
                 AppSettingEdit::Bool(name, new) => apply!(name, bool, new),
                 AppSettingEdit::Number(name, new) => apply!(name, u32, new),
             },
-            SettingsMessage::ResetToDefault => self.settings_editing = AppSettings::default(),
+            SettingsMessage::ResetToDefault => {
+                self.settings_editing = AppSettings {
+                    // Potential TODO - add attribute for skipping values that should not be reset to "default"
+                    steam_webapi_api_key: self.settings_editing.steam_webapi_api_key.clone(),
+                    ..AppSettings::default()
+                }
+            }
             SettingsMessage::ResetToSaved => self.settings_editing = self.settings.clone(),
             SettingsMessage::Save => {
                 let old = self.settings.clone();
@@ -2539,6 +2552,10 @@ impl App {
 
                 if old.download_directory != self.settings.download_directory {
                     self.scan_downloads();
+                }
+
+                if old.steam_webapi_api_key != self.settings.steam_webapi_api_key {
+                    self.api_key = SecretString::from(self.settings.steam_webapi_api_key.as_str());
                 }
 
                 if let Some(state) = Arc::get_mut(&mut self.steamcmd_state) {
