@@ -3618,6 +3618,9 @@ impl App {
 
         if !queue_empty {
             col = col.push(text("Queued Downloads").size(24));
+            if !self.steamcmd_state.is_logged_in() {
+                col = col.push(text("Note: You are not currently logged into SteamCMD"))
+            }
             col = col.extend(self.download_queue.iter().map(get_details));
         }
 
