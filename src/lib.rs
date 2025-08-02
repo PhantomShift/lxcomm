@@ -611,7 +611,8 @@ although this will also retry if any other errors occur. Set this to a higher va
     #[reflect(@AppSettingsLabel("steamcmd: Login On Startup"))]
     steamcmd_login_on_startup: bool,
     #[reflect(@AppSettingsLabel("steamcmd: Logout On Exit"))]
-    #[reflect(@AppSettingsDescription("If enabled, runs 'steamcmd +login [username] +logout + quit' when closing, necessitating that you log in again when running the app."))]
+    #[reflect(@AppSettingsDescription(r#"If enabled, runs 'logout' when closing if not currently busy with another operation,
+uncaching your login details and requiring that you log in again manually next time you use steamcmd."#))]
     steamcmd_logout_on_exit: bool,
     #[reflect(@AppSettingsLabel("steamcmd: Save Password"))]
     #[reflect(@AppSettingsDescription("If enabled, saves your Steam password to your secrets wallet to be used when opening the app again."))]
