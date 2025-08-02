@@ -1,10 +1,14 @@
+use std::cell::RefCell;
+
+use apply::Apply;
 use derivative::Derivative;
 use iced::widget::{
-    button, checkbox, column, container, horizontal_space, row, text, text_input, toggler,
+    button, checkbox, column, container, horizontal_space, pane_grid, row, text, text_input,
+    toggler,
 };
 use iced_aw::widget::labeled_frame::LabeledFrame;
 
-use crate::{AsyncDialogKey, Message};
+use crate::{App, AsyncDialogKey, Message};
 
 #[macro_export]
 macro_rules! tooltip {
@@ -179,4 +183,121 @@ impl AsyncDialogBuilder {
     add_with!(with_number_default, Number, impl Into<i64>);
     add_with!(with_toggler_default, Toggle, bool);
     add_with!(with_checkbox_default, Checkbox, bool);
+}
+
+enum ProfilePane {
+    ProfileList,
+    ModList,
+    ModEditor,
+}
+
+pub struct ProfilePaneState {
+    inner: iced::widget::pane_grid::State<ProfilePane>,
+}
+
+impl AsRef<iced::widget::pane_grid::State<ProfilePane>> for ProfilePaneState {
+    fn as_ref(&self) -> &iced::widget::pane_grid::State<ProfilePane> {
+        &self.inner
+    }
+}
+
+impl AsMut<iced::widget::pane_grid::State<ProfilePane>> for ProfilePaneState {
+    fn as_mut(&mut self) -> &mut iced::widget::pane_grid::State<ProfilePane> {
+        &mut self.inner
+    }
+}
+
+impl Default for ProfilePaneState {
+    fn default() -> Self {
+        use iced::widget::pane_grid;
+        Self {
+            inner: pane_grid::State::with_configuration(pane_grid::Configuration::Split {
+                axis: pane_grid::Axis::Vertical,
+                ratio: 0.2,
+                a: Box::new(pane_grid::Configuration::Pane(ProfilePane::ProfileList)),
+                b: Box::new(pane_grid::Configuration::Split {
+                    axis: pane_grid::Axis::Horizontal,
+                    ratio: 0.3,
+                    a: Box::new(pane_grid::Configuration::Pane(ProfilePane::ModList)),
+                    b: Box::new(pane_grid::Configuration::Pane(ProfilePane::ModEditor)),
+                }),
+            }),
+        }
+    }
+}
+
+impl App {
+    pub fn handle_profile_resize(&mut self, resize: pane_grid::ResizeEvent) {
+        self.profile_pane_state
+            .as_mut()
+            .resize(resize.split, resize.ratio);
+    }
+
+    pub fn profiles_page(&self) -> iced::Element<'_, Message> {
+        use iced::Fill;
+        use iced::widget::pane_grid;
+
+        macro_rules! sel_button {
+            ($inner:expr) => {
+                button(text($inner).height(Fill).width(Fill).size(14)).height(30)
+            };
+        }
+
+        let select_col = column(self.save.profiles.values().map(|profile| {
+            let style = if self.selected_profile_id.is_some_and(|id| id == profile.id) {
+                button::secondary
+            } else {
+                button::primary
+            };
+
+            sel_button!(profile.name.as_str())
+                .style(style)
+                .on_press(Message::ProfileSelected(profile.id))
+                .into()
+        }))
+        .push(sel_button!("Add Profile +").on_press(Message::ProfileAddPressed));
+
+        let (mod_list, editor) = if let Some(id) = self.selected_profile_id
+            && let Some(profile) = self.save.profiles.get(&id)
+        {
+            self.view_profile(profile)
+        } else {
+            (column!(text("No Profile Selected...")), None)
+        };
+
+        // I suspect there might be a better way to do this... but I don't know what it is.
+        let select_col = RefCell::new(Some(select_col));
+        let mod_list = RefCell::new(Some(mod_list));
+        let editor = RefCell::new(Some(editor));
+        pane_grid(
+            self.profile_pane_state.as_ref(),
+            move |_pane, state, _is_maximized| unsafe {
+                // Safety - each value should only be used once and it is
+                // an error by the developer to have multiple instances of
+                // a specific ProfilePane in the pane state (which should only use the default value)
+                match state {
+                    ProfilePane::ProfileList => {
+                        container(select_col.borrow_mut().take().unwrap_unchecked())
+                    }
+                    ProfilePane::ModList => {
+                        container(mod_list.borrow_mut().take().unwrap_unchecked())
+                    }
+                    ProfilePane::ModEditor => {
+                        container(editor.borrow_mut().take().unwrap_unchecked())
+                    }
+                }
+                .padding(4)
+                .apply(pane_grid::Content::new)
+                .style(|theme| {
+                    // To make it more obvious that you can resize
+                    let mut style = iced::widget::container::bordered_box(theme);
+                    style.border.color = theme.extended_palette().secondary.strong.color;
+                    style.border.width *= 2.0;
+                    style
+                })
+            },
+        )
+        .on_resize(8, Message::ProfilePageResized)
+        .into()
+    }
 }

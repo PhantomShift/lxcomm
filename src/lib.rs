@@ -36,8 +36,9 @@ use iced::{
     },
     widget::{
         self, Stack, button, checkbox, column, combo_box, container, horizontal_rule,
-        horizontal_space, image, markdown, opaque, progress_bar, rich_text, row, scrollable, span,
-        stack, text, text_editor, text_input, toggler, tooltip, vertical_rule, vertical_space,
+        horizontal_space, image, markdown, opaque, pane_grid, progress_bar, rich_text, row,
+        scrollable, span, stack, text, text_editor, text_input, toggler, tooltip, vertical_rule,
+        vertical_space,
     },
 };
 use iced_aw::{card, widget::LabeledFrame};
@@ -241,6 +242,7 @@ pub enum Message {
     ProfileViewFolderRequested(usize, String),
     ProfileImportFolderRequested(usize, String),
     ProfileImportCollectionRequested(Arc<Collection>),
+    ProfilePageResized(pane_grid::ResizeEvent),
     ActiveProfileSelected(String),
 
     LoadPrepareProfile(bool),
@@ -493,6 +495,8 @@ pub struct App {
     abortable_handles: HashMap<AppAbortKey, iced::task::Handle>,
     launch_log: iced::widget::text_editor::Content,
     collections: CollectionsState,
+
+    profile_pane_state: widgets::ProfilePaneState,
 }
 
 #[derive(Debug, Reflect, Clone, Copy)]
@@ -770,6 +774,8 @@ impl App {
             abortable_handles: HashMap::new(),
             launch_log: Default::default(),
             collections: CollectionsState::default(),
+
+            profile_pane_state: Default::default(),
         };
 
         let auto_grab_api_key = match app.credentials.steam_web_api.get_password() {
@@ -2085,6 +2091,7 @@ impl App {
                     Task::done(Message::OpenModal(Arc::new(AppModal::AsyncDialog(dialog)))),
                 ]);
             }
+            Message::ProfilePageResized(resize) => self.handle_profile_resize(resize),
             Message::ActiveProfileSelected(name) => {
                 self.save.active_profile = self
                     .save
@@ -2645,158 +2652,133 @@ impl App {
         Task::none()
     }
 
-    fn view_profile<'a>(&'a self, profile: &'a library::Profile) -> Element<'a, Message> {
-        column![
-            text(&profile.name).size(24),
-            container(
-                container(
-                    column![
-                        row(library::profile_folder::ALL.iter().map(|name| {
-                            button(text!("View {name}"))
-                                .on_press_with(|| {
-                                    Message::ProfileViewFolderRequested(
-                                        profile.id,
-                                        name.to_string(),
-                                    )
-                                })
-                                .into()
-                        }))
-                        .extend(library::profile_folder::ALL.iter().map(|name| {
-                            button(text!("Import {name}"))
-                                .on_press_with(|| {
-                                    Message::ProfileImportFolderRequested(
-                                        profile.id,
-                                        name.to_string(),
-                                    )
-                                })
-                                .style(button::secondary)
-                                .into()
-                        }))
-                        .push(
-                            // TODO - add confirmation
-                            button("Delete Profile")
-                                .style(button::danger)
-                                .on_press(Message::ProfileDeletePressed(profile.id)),
-                        )
-                        .wrap(),
-                        text("Mods").size(20),
-                        scrollable(column(profile.items.keys().map(|id| {
-                            let mut issues = vec![];
-                            let missing = if let ModId::Workshop(id) = id
-                                && !self.item_downloaded(*id)
-                            {
-                                issues
-                                    .push("Missing: Mod is not downloaded (or found)".to_string());
-                                true
-                            } else if let ModId::Local(path) = id
-                                && !path.exists()
-                            {
-                                issues
-                                    .push(format!("Missing: Could find mod at {}", path.display()));
-                                true
-                            } else {
-                                false
-                            };
-
-                            issues.extend(
-                                profile
-                                    .compatibility_issues
-                                    .get(id)
-                                    .map(Vec::as_slice)
-                                    .unwrap_or_default()
-                                    .iter()
-                                    .map(|item| match item {
-                                        library::CompatibilityIssue::MissingWorkshop(
-                                            _id,
-                                            message,
-                                        ) => {
-                                            format!("Missing Workshop Dependency: {message}")
-                                        }
-                                        library::CompatibilityIssue::MissingRequired(dlc_name) => {
-                                            format!("Missing Dependency: {dlc_name}")
-                                        }
-                                        library::CompatibilityIssue::Incompatible(dlc_name) => {
-                                            format!("Incompatible Mod: {dlc_name}")
-                                        }
-                                        library::CompatibilityIssue::Overlapping(
-                                            name,
-                                            provides,
-                                        ) => {
-                                            format!(
-                                                "{name} Provides Same DLCNames: {}",
-                                                provides.iter().join(", ")
-                                            )
-                                        }
-                                        library::CompatibilityIssue::Unknown => {
-                                            "Missing Info".to_string()
-                                        }
-                                    }),
-                            );
-
-                            let button_style = if let Some(sel_id) = &profile.view_selected_item
-                                && sel_id == id
-                            {
-                                button::secondary
-                            } else if !issues.is_empty() {
-                                button::danger
-                            } else {
-                                button::primary
-                            };
-                            let missing_text = if missing { " (MISSING)" } else { "" };
-                            let select = if let Some(details) = self.file_cache.get_details(id) {
-                                button(text!("{} ({id}){missing_text}", details.title()))
-                                    .on_press_with(|| Message::ProfileItemSelected(id.clone()))
-                            } else {
-                                button(text!("UNKNOWN ({id}){missing_text}"))
-                            }
-                            .style(button_style)
-                            .width(Fill);
-
-                            if !issues.is_empty() {
-                                row![
-                                    button("X").style(button::danger).on_press_with(|| {
-                                        Message::ProfileRemoveItems(profile.id, vec![id.clone()])
-                                    }),
-                                    tooltip!(
-                                        select,
-                                        column(issues.into_iter().map(|s| text(s).into())),
-                                        tooltip::Position::Bottom,
-                                    )
-                                ]
-                                .into()
-                            } else {
-                                select.into()
-                            }
-                        })))
-                        .height(128),
-                    ]
-                    .push(profile.view_selected_item.as_ref().map(|item_id| {
-                        row![
-                            button("View Details")
-                                .on_press_with(|| Message::SetViewingItem(item_id.clone())),
-                            horizontal_space(),
-                            button("Remove Mod")
-                                .style(button::danger)
-                                .on_press_with(|| Message::ProfileRemoveItems(
-                                    profile.id,
-                                    vec![item_id.clone()]
-                                ))
-                        ]
-                    }))
-                    .push(
-                        profile
-                            .view_selected_item
-                            .is_some()
-                            .then(|| self.mod_editor.view(self))
-                    )
-                )
-                .width(Fill)
-                .padding(8)
-                .style(container::dark)
+    fn view_profile<'a>(
+        &'a self,
+        profile: &'a library::Profile,
+    ) -> (widget::Column<'a, Message>, Option<Element<'a, Message>>) {
+        let mod_list = column![
+            row(library::profile_folder::ALL.iter().map(|name| {
+                button(text!("View {name}"))
+                    .on_press_with(|| {
+                        Message::ProfileViewFolderRequested(profile.id, name.to_string())
+                    })
+                    .into()
+            }))
+            .extend(library::profile_folder::ALL.iter().map(|name| {
+                button(text!("Import {name}"))
+                    .on_press_with(|| {
+                        Message::ProfileImportFolderRequested(profile.id, name.to_string())
+                    })
+                    .style(button::secondary)
+                    .into()
+            }))
+            .push(
+                // TODO - add confirmation
+                button("Delete Profile")
+                    .style(button::danger)
+                    .on_press(Message::ProfileDeletePressed(profile.id)),
             )
-            .padding(16),
-        ]
-        .into()
+            .wrap(),
+            text("Mods").size(20),
+            scrollable(column(profile.items.keys().map(|id| {
+                let mut issues = vec![];
+                let missing = if let ModId::Workshop(id) = id
+                    && !self.item_downloaded(*id)
+                {
+                    issues.push("Missing: Mod is not downloaded (or found)".to_string());
+                    true
+                } else if let ModId::Local(path) = id
+                    && !path.exists()
+                {
+                    issues.push(format!("Missing: Could find mod at {}", path.display()));
+                    true
+                } else {
+                    false
+                };
+
+                issues.extend(
+                    profile
+                        .compatibility_issues
+                        .get(id)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|item| match item {
+                            library::CompatibilityIssue::MissingWorkshop(_id, message) => {
+                                format!("Missing Workshop Dependency: {message}")
+                            }
+                            library::CompatibilityIssue::MissingRequired(dlc_name) => {
+                                format!("Missing Dependency: {dlc_name}")
+                            }
+                            library::CompatibilityIssue::Incompatible(dlc_name) => {
+                                format!("Incompatible Mod: {dlc_name}")
+                            }
+                            library::CompatibilityIssue::Overlapping(name, provides) => {
+                                format!(
+                                    "{name} Provides Same DLCNames: {}",
+                                    provides.iter().join(", ")
+                                )
+                            }
+                            library::CompatibilityIssue::Unknown => "Missing Info".to_string(),
+                        }),
+                );
+
+                let button_style = if let Some(sel_id) = &profile.view_selected_item
+                    && sel_id == id
+                {
+                    button::secondary
+                } else if !issues.is_empty() {
+                    button::danger
+                } else {
+                    button::primary
+                };
+                let missing_text = if missing { " (MISSING)" } else { "" };
+                let select = if let Some(details) = self.file_cache.get_details(id) {
+                    button(text!("{} ({id}){missing_text}", details.title()))
+                        .on_press_with(|| Message::ProfileItemSelected(id.clone()))
+                } else {
+                    button(text!("UNKNOWN ({id}){missing_text}"))
+                }
+                .style(button_style)
+                .width(Fill);
+
+                if !issues.is_empty() {
+                    row![
+                        button("X").style(button::danger).on_press_with(|| {
+                            Message::ProfileRemoveItems(profile.id, vec![id.clone()])
+                        }),
+                        tooltip!(
+                            select,
+                            column(issues.into_iter().map(|s| text(s).into())),
+                            tooltip::Position::Bottom,
+                        )
+                    ]
+                    .into()
+                } else {
+                    select.into()
+                }
+            })))
+        ];
+
+        let editor = profile.view_selected_item.as_ref().map(|item_id| {
+            column![
+                row![
+                    button("View Details")
+                        .on_press_with(|| Message::SetViewingItem(item_id.clone())),
+                    horizontal_space(),
+                    button("Remove Mod")
+                        .style(button::danger)
+                        .on_press_with(|| Message::ProfileRemoveItems(
+                            profile.id,
+                            vec![item_id.clone()]
+                        ))
+                ],
+                self.mod_editor.view(self)
+            ]
+            .into()
+        });
+
+        (mod_list, editor)
     }
 
     fn view_item_detailed<'a>(&'a self, id: &'a ModId) -> Element<'a, Message> {
@@ -3393,48 +3375,6 @@ impl App {
         .width(Fill)
         .height(Fill)
         .into()
-    }
-
-    fn profiles_page(&self) -> Element<'_, Message> {
-        macro_rules! sel_button {
-            ($inner:expr) => {
-                button(text($inner).height(Fill).width(Fill).size(14)).height(30)
-            };
-        }
-
-        let mut select_col = iced_aw::grid![].column_width(Fill).width(256);
-
-        select_col = select_col.extend(self.save.profiles.values().map(|profile| {
-            let style = if self.selected_profile_id.is_some_and(|id| id == profile.id) {
-                button::secondary
-            } else {
-                button::primary
-            };
-
-            iced_aw::grid_row![
-                sel_button!(profile.name.as_str())
-                    .style(style)
-                    .on_press(Message::ProfileSelected(profile.id))
-            ]
-        }));
-
-        select_col = select_col.push(iced_aw::grid_row![
-            sel_button!("Add Profile +").on_press(Message::ProfileAddPressed)
-        ]);
-
-        let profile_col = if let Some(id) = self.selected_profile_id
-            && let Some(profile) = self.save.profiles.get(&id)
-        {
-            // container(column![text(profile.name.as_str()).size(32)])
-            container(self.view_profile(profile))
-        } else {
-            container("No Profile Selected...")
-        };
-
-        row![select_col, profile_col]
-            .height(Fill)
-            .width(Fill)
-            .into()
     }
 
     fn steamcmd_page(&self) -> Element<'_, Message> {
