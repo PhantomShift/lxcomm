@@ -5,3 +5,4 @@ Type=Application
 Icon=lxcomm
 Categories=Game;
 StartupWMClass=lxcomm
+Comment=Mod browser, downloader and manager for non-Steam XCOM2 (WOTC)
