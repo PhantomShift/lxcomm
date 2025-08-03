@@ -1,5 +1,3 @@
-use std::cell::RefCell;
-
 use apply::Apply;
 use derivative::Derivative;
 use iced::widget::{
@@ -237,54 +235,49 @@ impl App {
         use iced::Fill;
         use iced::widget::pane_grid;
 
-        macro_rules! sel_button {
-            ($inner:expr) => {
-                button(text($inner).height(Fill).width(Fill).size(14)).height(30)
-            };
-        }
+        let profile = self
+            .selected_profile_id
+            .and_then(|id| self.save.profiles.get(&id));
 
-        let select_col = column(self.save.profiles.values().map(|profile| {
-            let style = if self.selected_profile_id.is_some_and(|id| id == profile.id) {
-                button::secondary
-            } else {
-                button::primary
-            };
-
-            sel_button!(profile.name.as_str())
-                .style(style)
-                .on_press(Message::ProfileSelected(profile.id))
-                .into()
-        }))
-        .push(sel_button!("Add Profile +").on_press(Message::ProfileAddPressed));
-
-        let (mod_list, editor) = if let Some(id) = self.selected_profile_id
-            && let Some(profile) = self.save.profiles.get(&id)
-        {
-            self.view_profile(profile)
-        } else {
-            (column!(text("No Profile Selected...")), None)
-        };
-
-        // I suspect there might be a better way to do this... but I don't know what it is.
-        let select_col = RefCell::new(Some(select_col));
-        let mod_list = RefCell::new(Some(mod_list));
-        let editor = RefCell::new(Some(editor));
         pane_grid(
             self.profile_pane_state.as_ref(),
-            move |_pane, state, _is_maximized| unsafe {
-                // Safety - each value should only be used once and it is
-                // an error by the developer to have multiple instances of
-                // a specific ProfilePane in the pane state (which should only use the default value)
+            move |_pane, state, _is_maximized| {
                 match state {
                     ProfilePane::ProfileList => {
-                        container(select_col.borrow_mut().take().unwrap_unchecked())
+                        macro_rules! sel_button {
+                            ($inner:expr) => {
+                                button(text($inner).height(Fill).width(Fill).size(14)).height(30)
+                            };
+                        }
+
+                        let select_col = column(self.save.profiles.values().map(|profile| {
+                            let style =
+                                if self.selected_profile_id.is_some_and(|id| id == profile.id) {
+                                    button::secondary
+                                } else {
+                                    button::primary
+                                };
+
+                            sel_button!(profile.name.as_str())
+                                .style(style)
+                                .on_press(Message::ProfileSelected(profile.id))
+                                .into()
+                        }))
+                        .push(sel_button!("Add Profile +").on_press(Message::ProfileAddPressed));
+                        container(select_col)
                     }
                     ProfilePane::ModList => {
-                        container(mod_list.borrow_mut().take().unwrap_unchecked())
+                        container(profile.map(|profile| self.view_profile_mod_list(profile)))
                     }
-                    ProfilePane::ModEditor => {
-                        container(editor.borrow_mut().take().unwrap_unchecked())
-                    }
+                    ProfilePane::ModEditor => container(
+                        profile
+                            .and_then(|profile| {
+                                Some((profile, profile.view_selected_item.as_ref()?))
+                            })
+                            .map(|(profile, item_id)| {
+                                self.view_profile_mod_editor(profile, item_id)
+                            }),
+                    ),
                 }
                 .padding(4)
                 .apply(pane_grid::Content::new)

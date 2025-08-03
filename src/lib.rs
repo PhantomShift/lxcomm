@@ -2653,11 +2653,11 @@ impl App {
         Task::none()
     }
 
-    fn view_profile<'a>(
+    fn view_profile_mod_list<'a>(
         &'a self,
         profile: &'a library::Profile,
-    ) -> (widget::Column<'a, Message>, Option<Element<'a, Message>>) {
-        let mod_list = column![
+    ) -> widget::Column<'a, Message> {
+        column![
             row(library::profile_folder::ALL.iter().map(|name| {
                 button(text!("View {name}"))
                     .on_press_with(|| {
@@ -2674,7 +2674,6 @@ impl App {
                     .into()
             }))
             .push(
-                // TODO - add confirmation
                 button("Delete Profile")
                     .style(button::danger)
                     .on_press(Message::ProfileDeletePressed(profile.id)),
@@ -2759,27 +2758,27 @@ impl App {
                     select.into()
                 }
             })))
-        ];
+        ]
+    }
 
-        let editor = profile.view_selected_item.as_ref().map(|item_id| {
-            column![
-                row![
-                    button("View Details")
-                        .on_press_with(|| Message::SetViewingItem(item_id.clone())),
-                    horizontal_space(),
-                    button("Remove Mod")
-                        .style(button::danger)
-                        .on_press_with(|| Message::ProfileRemoveItems(
-                            profile.id,
-                            vec![item_id.clone()]
-                        ))
-                ],
-                self.mod_editor.view(self)
-            ]
-            .into()
-        });
-
-        (mod_list, editor)
+    fn view_profile_mod_editor<'a>(
+        &'a self,
+        profile: &'a library::Profile,
+        item_id: &'a ModId,
+    ) -> widget::Column<'a, Message> {
+        column![
+            row![
+                button("View Details").on_press_with(|| Message::SetViewingItem(item_id.clone())),
+                horizontal_space(),
+                button("Remove Mod")
+                    .style(button::danger)
+                    .on_press_with(|| Message::ProfileRemoveItems(
+                        profile.id,
+                        vec![item_id.clone()]
+                    ))
+            ],
+            self.mod_editor.view(self)
+        ]
     }
 
     fn view_item_detailed<'a>(&'a self, id: &'a ModId) -> Element<'a, Message> {
