@@ -3497,6 +3497,12 @@ impl App {
     }
 
     fn downloads_page(&self) -> Element<'_, Message> {
+        macro_rules! view_details {
+            ($id:expr) => {
+                button("View Details").on_press(Message::SetViewingItem(ModId::Workshop($id)))
+            };
+        }
+
         let get_details = |(id, size): (&u32, &u64)| -> Element<'_, Message> {
             let cancel = self
                 .download_queue
@@ -3534,17 +3540,16 @@ impl App {
                     ]
                     .width(Fill),
                 ]
-                .push(cancel)
-                .into()
             } else {
                 let displayed_size = files::SizeDisplay::automatic(*size);
                 row![
                     text!("Unknown ({id}) - {displayed_size}"),
                     horizontal_space(),
                 ]
-                .push(cancel)
-                .into()
             }
+            .push(column![vertical_space(), view_details!(*id)].height(50))
+            .push(cancel)
+            .into()
         };
 
         let mut col = column(None).spacing(8);
@@ -3596,6 +3601,7 @@ impl App {
                         row![
                             text(info).shaping(text::Shaping::Advanced),
                             horizontal_space(),
+                            view_details!(*id),
                             button("Clear")
                                 .on_press(Message::SteamCMDDownloadCompletedClear(vec![*id])),
                         ]
@@ -3629,6 +3635,7 @@ impl App {
                         text!("Last Updated - {formatted}")
                     ],
                     horizontal_space(),
+                    view_details!(id),
                     button("Download").on_press(Message::DownloadPushPending(vec![id]))
                 ]
                 .into()
@@ -3657,6 +3664,7 @@ impl App {
                     row![
                         text(info),
                         horizontal_space(),
+                        view_details!(*id),
                         button("Retry").on_press(Message::SteamCMDDownloadRequested(*id)),
                         button("Clear").on_press(Message::SteamCMDDownloadErrorClear(vec![*id])),
                     ]
@@ -3669,7 +3677,7 @@ impl App {
             col = col.push(text("No ongoing downloads..."))
         }
 
-        scrollable(col).into()
+        scrollable(col).height(Fill).into()
     }
 
     fn game_logs_page(&self) -> Element<'_, Message> {
