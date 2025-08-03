@@ -59,7 +59,6 @@ paru -Syu lxcomm-bin
 Specifically for a local Linux user installation. Requires [just](https://github.com/casey/just).
 
 ```bash
-# Ensure ~/.cargo/bin is included in your path
 git clone https://github.com/phantomshift/lxcomm.git
 cd lxcomm
 just install-local
@@ -78,7 +77,7 @@ for platform-specific fixes.
 
 ## Tracking Ideas
 
-In no particular order:
+In order of "whenever the hell it pops up in my head":
 
 - [x] Option to log out of steamcmd on exit (default command: quit)
 - [x] Text editor + diffing for per-profile mod ini settings
@@ -96,7 +95,8 @@ In no particular order:
 - [ ] Disk cache trimming
 - [x] ~~Ability to enter workshop ID directly for browsing or downloading (due to unreliable browsing results)~~ Search results should now be all-inclusive
 - [ ] Investigate controller navigation in iced (or libcosmic) (for the Steam Deck gamers)
-- [ ] Make profile page widgets resizable
+- [x] Make profile page widgets resizable
+- [ ] Add option to create profile snapshots when applying and/or launching via LXCOMM
 
 ## License
 
