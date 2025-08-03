@@ -3919,15 +3919,6 @@ impl App {
                                         if is_workshop
                                             && *file_name != *data.published_file_id.to_string()
                                         {
-                                            eprintln!(
-                                                "Found a mod that has mismatched IDs: {} ({}, expected {})",
-                                                data.title,
-                                                data.published_file_id,
-                                                file_name.display()
-                                            );
-                                            eprintln!(
-                                                "For now, we trust the file name over the reported ID."
-                                            );
                                             data.published_file_id = file_name.to_string_lossy().parse::<u32>()
                                                 .expect("steam workshop items should be contained in a folder named by its ID");
                                         }
