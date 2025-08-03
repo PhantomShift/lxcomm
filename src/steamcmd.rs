@@ -2,7 +2,6 @@ use std::{
     collections::{BTreeMap, VecDeque},
     io::{BufRead, Write},
     path::{Path, PathBuf},
-    process::ExitStatusError,
     string::FromUtf8Error,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -62,8 +61,6 @@ pub enum Error {
     SendError(#[from] std::sync::mpsc::SendError<String>),
     #[error("download failed")]
     DownloadFailure(Box<Error>, u32),
-    #[error("child process exited with failure: {0}")]
-    ProcessFailure(#[from] ExitStatusError),
     #[error("missing field: {0}")]
     MissingField(&'static str),
     #[error("failed to log in")]

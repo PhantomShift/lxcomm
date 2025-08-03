@@ -1,6 +1,4 @@
 #![feature(try_blocks)]
-#![feature(iter_intersperse)]
-#![feature(exit_status_error)]
 #![feature(path_add_extension)]
 #![feature(iter_map_windows)]
 // For windows soft links
