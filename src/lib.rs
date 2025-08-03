@@ -2850,6 +2850,14 @@ impl App {
                     .padding(16),
                     column![
                         text(file.title().to_owned()).size(18),
+                        id.maybe_workshop().map(|id| {
+                            tooltip!(
+                                rich_text([text::Span::new(id.to_string()).link(id)]).on_link_click(|id: u32| {
+                                    web::open_browser(format!("https://steamcommunity.com/sharedfiles/filedetails/?id={id}"))
+                                }),
+                                "Open in Browser",
+                            )
+                        }),
                         text!("{:.2} out of 10", file.get_score() * 10.0),
                     ]
                     .push(file.children().is_empty().not().then(|| {

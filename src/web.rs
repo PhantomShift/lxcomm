@@ -754,3 +754,11 @@ pub fn handle_url(url: reqwest::Url) -> Message {
         Message::None
     }
 }
+
+/// Should only be used for trusted links (e.g. Steam)
+pub fn open_browser(url: String) -> Message {
+    std::thread::spawn(move || {
+        let _ = opener::open_browser(url);
+    });
+    Message::None
+}
