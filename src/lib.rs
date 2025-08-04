@@ -3416,8 +3416,8 @@ impl App {
                     .push(button("Add +").on_press(Message::LoadAddLaunchArgs))
                 ),
                 row![
-                    button("Build").on_press(Message::LoadPrepareProfile(true)),
-                    button("Launch").on_press(Message::LoadLaunchGame),
+                    button("Apply").on_press_maybe(self.save.active_profile.is_some().then_some(Message::LoadPrepareProfile(true))),
+                    button("Launch").on_press_maybe(self.save.active_profile.is_some().then_some(Message::LoadLaunchGame)),
                 ].spacing(8),
             ]
             .padding(16),
