@@ -1,13 +1,20 @@
-use std::{collections::BTreeMap, path::PathBuf, sync::LazyLock};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::LazyLock,
+};
 
 use apply::Apply;
 use fuse_rust::Fuse;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    extensions::Truncatable,
     files::{Cache, ModDetails},
     xcom_mod::{self, ModId},
 };
+
+pub const PROFILE_DATA_NAME: &str = "data.json";
 
 static DEFAULT_FUZZY_MATCHER: LazyLock<Fuse> = LazyLock::new(|| Fuse {
     // Potential TODO - Adjust this threshold
@@ -172,7 +179,6 @@ impl Library {
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Profile {
-    pub id: usize,
     pub name: String,
     pub items: BTreeMap<ModId, LibraryItemSettings>,
 
@@ -186,13 +192,13 @@ pub struct Profile {
 
 impl PartialEq for Profile {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+        self.name == other.name
     }
 }
 
 impl PartialOrd for Profile {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.id.partial_cmp(&other.id)
+        self.name.partial_cmp(&other.name)
     }
 }
 
@@ -309,6 +315,64 @@ impl Profile {
 
         self.compatibility_issues = all;
     }
+
+    pub fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    pub fn load_state(root: &Path, name: &str) -> std::io::Result<Profile> {
+        let profile_path = root.join(name).join(PROFILE_DATA_NAME);
+        let read = std::fs::read_to_string(profile_path)?;
+        let profile: Profile = serde_json::from_str(&read)?;
+
+        Ok(profile)
+    }
+
+    pub fn save_into(&self, file: std::fs::File) -> std::io::Result<()> {
+        Ok(serde_json::to_writer_pretty(file, self)?)
+    }
+
+    pub fn save_state_in(&self, root: &Path) -> std::io::Result<()> {
+        let path = root.join(&self.name);
+        let file = std::fs::File::create(path)?;
+        self.save_into(file)
+    }
+}
+
+// Based on https://superuser.com/a/748264
+static DISALLOWED_CHARS: &[char] = &['.', '/', '\\', ':', ';', '*', '?', '"', '<', '>', '|', '\0'];
+const FILENAME_MAX_LEN: usize = 255;
+pub fn validate_profile_name(name: &str) -> Result<(), String> {
+    static DISALLOWED_DISPLAY: LazyLock<String> =
+        LazyLock::new(|| String::from_iter(DISALLOWED_CHARS));
+
+    if name.is_empty() {
+        return Err("Submitted name is empty.".to_owned());
+    }
+    if name.chars().count() > FILENAME_MAX_LEN {
+        return Err(format!(
+            "Profile name cannot be longer than {FILENAME_MAX_LEN} characters."
+        ));
+    }
+    for ch in name.chars() {
+        if DISALLOWED_CHARS.contains(&ch) {
+            return Err(format!(
+                "Profile name cannot contain any of the following characters: '{}'",
+                *DISALLOWED_DISPLAY,
+            ));
+        }
+        if ch.is_ascii_control() {
+            return Err("Profile name cannot contain control characters.".to_owned());
+        }
+    }
+
+    Ok(())
+}
+
+pub fn sanitize_profile_name(name: &str) -> String {
+    name.truncated(FILENAME_MAX_LEN)
+        .replace(DISALLOWED_CHARS, "_")
+        .replace(|ch: char| ch.is_ascii_control(), "_")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

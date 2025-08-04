@@ -7,7 +7,7 @@
 
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     hash::Hash,
     ops::Not,
     path::{Path, PathBuf},
@@ -44,7 +44,7 @@ use indexmap::IndexSet;
 use itertools::Itertools;
 use ringmap::RingMap;
 use secrecy::{ExposeSecret, SecretString};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use steam_rs::{self, Steam, published_file_service::query_files::PublishedFiles};
 use strum::{Display, EnumIter, IntoEnumIterator};
 
@@ -222,7 +222,7 @@ pub enum Message {
     CheckOutdatedCompleted(HashMap<u32, u64>),
     LibraryAddToProfileRequest,
     LibraryAddToProfileToggleAll(bool),
-    LibraryAddToProfileToggled(usize, bool),
+    LibraryAddToProfileToggled(String, bool),
     LibraryAddToProfileConfirm(Vec<ModId>),
     LibraryDeleteRequest,
     LibraryDeleteConfirm,
@@ -231,14 +231,14 @@ pub enum Message {
     ProfileAddPressed,
     ProfileAddEdited(String),
     ProfileAddCompleted(bool),
-    ProfileAddItems(usize, Vec<ModId>),
-    ProfileDeletePressed(usize),
-    ProfileDeleteConfirmed(usize),
-    ProfileRemoveItems(usize, Vec<ModId>),
-    ProfileSelected(usize),
+    ProfileAddItems(String, Vec<ModId>),
+    ProfileDeletePressed(String),
+    ProfileDeleteConfirmed(String),
+    ProfileRemoveItems(String, Vec<ModId>),
+    ProfileSelected(String),
     ProfileItemSelected(ModId),
-    ProfileViewFolderRequested(usize, String),
-    ProfileImportFolderRequested(usize, String),
+    ProfileViewFolderRequested(String, String),
+    ProfileImportFolderRequested(String, String),
     ProfileImportCollectionRequested(Arc<Collection>),
     ProfilePageResized(pane_grid::ResizeEvent),
     ActiveProfileSelected(String),
@@ -378,7 +378,7 @@ pub enum AsyncDialogStrategy {
     Stack,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AsyncDialogKey {
     GameFind,
     LocalFind,
@@ -386,6 +386,7 @@ pub enum AsyncDialogKey {
     DownloadMultipleConfirm,
     ProfileImportCollection,
     Id(usize),
+    StringId(String),
 }
 
 impl AppModal {
@@ -438,11 +439,16 @@ pub enum AppAbortKey {
     Id(usize),
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde_with::serde_as]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 struct AppSave {
     username: String,
-    profiles: BTreeMap<usize, library::Profile>,
-    active_profile: Option<usize>,
+    #[serde(rename = "profiles")]
+    _profiles: Option<BTreeMap<usize, library::Profile>>,
+    #[serde(default)]
+    tracked_profiles: BTreeSet<String>,
+    #[serde_as(as = "serde_with::DefaultOnError")]
+    active_profile: Option<String>,
     game_directory: Option<PathBuf>,
     local_directory: Option<PathBuf>,
     launch_command: Option<String>,
@@ -450,6 +456,24 @@ struct AppSave {
     launch_args: Vec<(String, String)>,
     #[serde(default)]
     local_mod_dirs: IndexSet<PathBuf>,
+}
+
+impl AppSave {
+    /// Potential TODO: figure out config/save versioning and migration for removed/renamed fields?
+    /// This is currently a one-off fix for profile migration from 0.3.*.
+    /// The alternative is requiring user intervention, perhaps provide scripts.
+    fn _migrate_profiles(&mut self) -> Option<HashMap<usize, library::Profile>> {
+        let tracked = &mut self.tracked_profiles;
+        self._profiles.as_ref().map(|profiles| {
+            profiles
+                .iter()
+                .map(move |(id, profile)| {
+                    tracked.insert(profile.name.clone());
+                    (*id, profile.to_owned())
+                })
+                .collect()
+        })
+    }
 }
 
 pub struct App {
@@ -483,10 +507,11 @@ pub struct App {
     downloaded: BTreeMap<u32, PathBuf>,
     local: BTreeSet<PathBuf>,
     library: library::Library,
+    profiles: BTreeMap<String, library::Profile>,
     file_cache: files::Cache,
     markup_cache: markup::MarkupCache,
     profile_add_name: String,
-    selected_profile_id: Option<usize>,
+    selected_profile_name: Option<Box<str>>,
     background_resolver_sender: Option<Sender<Message>>,
     mod_editor: mod_edit::Editor,
     active_profile_combo: combo_box::State<String>,
@@ -673,6 +698,8 @@ impl App {
     fn boot(
         #[cfg(feature = "dbus")] connection: zbus::blocking::Connection,
     ) -> eyre::Result<(Self, Task<Message>)> {
+        let mut reportable_errors = Vec::new();
+
         let steam_web_api_entry = keyring::Entry::new("lxcomm-steam", "steam-web-api")?;
         let steam_password_entry = keyring::Entry::new("lxcomm-steam", "steam-password")?;
 
@@ -685,14 +712,118 @@ impl App {
             AppSettings::default()
         };
 
-        let save = if let Ok(true) = SAVE_PATH.try_exists()
-            && let Ok(file) = std::fs::File::open(&*SAVE_PATH)
-            && let Ok(save) = serde_json::from_reader(file)
-        {
-            save
-        } else {
-            AppSave::default()
+        fn load_data<T: Default + DeserializeOwned>(
+            source: &Path,
+            name: &'static str,
+        ) -> eyre::Result<T> {
+            let res: std::io::Result<T> = try {
+                if !source.try_exists()? {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "could not find data",
+                    ))?
+                } else {
+                    let file = std::fs::File::open(source)?;
+                    let data: T = serde_json::from_reader(file)?;
+                    data
+                }
+            };
+
+            match res {
+                Ok(data) => Ok(data),
+                Err(err) => {
+                    let backup = source.with_added_extension("bak");
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        if std::fs::copy(source, &backup).is_err() {
+                            return Err(eyre::Report::new(err)
+                                    .wrap_err(format!(
+                                        "Failed to load {name} and could not automatically create a backup at {}, {name} will be lost if you do not back it up manually before closing LXCOMM.",
+                                        backup.display()
+                                    )
+                                )
+                            );
+                        } else {
+                            return Err(eyre::Report::new(err).wrap_err(format!(
+                                "Failed to load {name}, original has been backed up to {}.",
+                                backup.display()
+                            )));
+                        }
+                    };
+
+                    Ok(T::default())
+                }
+            }
+        }
+
+        let mut settings = load_data::<AppSettings>(SETTINGS_PATH.as_path(), "settings")
+            .unwrap_or_else(|report| {
+                reportable_errors.push(report);
+                AppSettings::default()
+            });
+
+        let mut save = load_data::<AppSave>(SAVE_PATH.as_path(), "application data")
+            .unwrap_or_else(|report| {
+                reportable_errors.push(report);
+                AppSave::default()
+            });
+
+        if let Some(old_profiles) = save._migrate_profiles() {
+            eprintln!("Migrating old profile data...");
+            // Keep a backup just in case
+            if let Err(err) = std::fs::File::create_new(SAVE_PATH.with_added_extension("bak"))
+                .map_err(eyre::Error::new)
+                .map(|file| serde_json::to_writer_pretty(file, &save).map_err(eyre::Error::new))
+            {
+                eprintln!(
+                    "Error creating backup of save data being migrated from old version: {err:?}"
+                );
+            }
+
+            for (id, mut profile) in old_profiles.into_iter() {
+                let name = {
+                    // In case user named their profile just a number
+                    let mut original = library::sanitize_profile_name(&profile.name);
+                    if original.parse::<usize>().is_ok() {
+                        original = format!("Profile_{original}");
+                    }
+                    original
+                };
+
+                profile.name = name.clone();
+                let old_path = PROFILES_DIR.join(id.to_string());
+                let new_dest = PROFILES_DIR.join(&name);
+                let data_path = new_dest.join(library::PROFILE_DATA_NAME);
+
+                let res: std::io::Result<()> = {
+                    if old_path.try_exists()? && !new_dest.try_exists()? {
+                        std::fs::rename(&old_path, new_dest)?;
+                        let writer = std::fs::File::create_new(data_path)?;
+                        serde_json::to_writer_pretty(writer, &profile)?;
+                    }
+                    Ok(())
+                };
+                if let Err(err) = res {
+                    reportable_errors.push(eyre::Error::new(err).wrap_err(format!(
+                        "Error migrating profile '{name}', user will need to migrate manually."
+                    )));
+                }
+            }
+
+            save._profiles = None;
         };
+
+        let profiles = BTreeMap::from_iter(save.tracked_profiles.iter().filter_map(|tracked| {
+            match library::Profile::load_state(&PROFILES_DIR, tracked) {
+                Ok(profile) => Some((profile.name.clone(), profile)),
+                Err(err) => {
+                    reportable_errors.push(
+                        eyre::Error::new(err)
+                            .wrap_err(format!("Error occurred loading profile '{tracked}'")),
+                    );
+                    None
+                }
+            }
+        }));
 
         let steamcmd_state = Arc::new(steamcmd::State {
             username: save.username.clone(),
@@ -721,7 +852,7 @@ impl App {
         };
 
         let active_profile_combo =
-            combo_box::State::new(save.profiles.values().map(|p| p.name.clone()).collect());
+            combo_box::State::new(save.tracked_profiles.iter().cloned().collect());
 
         #[cfg(feature = "flatpak")]
         {
@@ -763,10 +894,11 @@ impl App {
             downloaded: BTreeMap::new(),
             local: BTreeSet::new(),
             library: library::Library::default(),
+            profiles,
             file_cache: files::Cache::default(),
             markup_cache: markup::MarkupCache::default(),
             profile_add_name: String::new(),
-            selected_profile_id: None,
+            selected_profile_name: None,
             background_resolver_sender: None,
             mod_editor: mod_edit::Editor::default(),
             active_profile_combo,
@@ -811,13 +943,25 @@ impl App {
             Task::none()
         };
 
+        let display_errors =
+            if reportable_errors.is_empty() {
+                Task::none()
+            } else {
+                Task::batch(reportable_errors.into_iter().map(|err| {
+                    Task::done(Message::display_error("Startup Error", format!("{err:?}")))
+                }))
+            };
+
         // Potential TODO: turn this into an asynchronous task to prevent UI lockup on extremely large libraries
         app.scan_downloads();
         for path in app.save.local_mod_dirs.clone() {
             app.scan_mods(&path, false);
         }
 
-        Ok((app, Task::batch([auto_grab_api_key, auto_login])))
+        Ok((
+            app,
+            Task::batch([auto_grab_api_key, auto_login, display_errors]),
+        ))
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -1755,7 +1899,7 @@ impl App {
                 };
             }
             Message::LibraryAddToProfileRequest => {
-                for profile in self.save.profiles.values_mut() {
+                for profile in self.profiles.values_mut() {
                     profile.add_selected = false;
                 }
                 self.modal_stack.push(AppModal::AddToProfileRequest(
@@ -1766,20 +1910,17 @@ impl App {
                 ));
             }
             Message::LibraryAddToProfileToggleAll(toggled) => {
-                self.save
-                    .profiles
+                self.profiles
                     .values_mut()
                     .for_each(|p| p.add_selected = toggled);
             }
-            Message::LibraryAddToProfileToggled(id, toggle) => {
-                self.save
-                    .profiles
-                    .entry(id)
+            Message::LibraryAddToProfileToggled(name, toggle) => {
+                self.profiles
+                    .entry(name)
                     .and_modify(|profile| profile.add_selected = toggle);
             }
             Message::LibraryAddToProfileConfirm(ids) => {
                 for profile in self
-                    .save
                     .profiles
                     .values_mut()
                     .filter(|profile| profile.add_selected)
@@ -1818,27 +1959,29 @@ impl App {
             }
             Message::ProfileAddCompleted(submitted) => {
                 if submitted {
-                    if self.profile_add_name.is_empty() {
+                    let name = &self.profile_add_name;
+
+                    if name.is_empty() {
                         return Task::none();
                     }
 
-                    if self
-                        .save
-                        .profiles
-                        .iter()
-                        .any(|(_id, profile)| profile.name == self.profile_add_name)
-                    {
+                    if self.profiles.contains_key(name) {
                         return Task::done(Message::DisplayError(
                             "Error".to_string(),
                             "Profile with this name already exists!".to_string(),
                         ));
                     }
 
-                    let id = (0..usize::MAX)
-                        .find(|i| !self.save.profiles.contains_key(i))
-                        .expect("profile should never reasonably contain > usize::MAX items");
+                    if let Err(message) = library::validate_profile_name(name) {
+                        return Task::done(Message::display_error("Invalid Name", message));
+                    }
 
-                    let profile_path = PROFILES_DIR.join(id.to_string());
+                    let profile_path = PROFILES_DIR.join(name);
+                    let profile = library::Profile {
+                        name: name.to_owned(),
+                        items: BTreeMap::new(),
+                        ..Default::default()
+                    };
                     let result: std::io::Result<()> = try {
                         if let Ok(true) = profile_path.try_exists() {
                             std::fs::remove_dir_all(&profile_path)?
@@ -1847,6 +1990,10 @@ impl App {
                         for name in library::profile_folder::ALL.iter() {
                             std::fs::create_dir(profile_path.join(name))?;
                         }
+                        let writer = std::fs::File::create_new(
+                            profile_path.join(library::PROFILE_DATA_NAME),
+                        )?;
+                        serde_json::to_writer_pretty(writer, &profile)?;
                     };
                     if let Err(err) = result {
                         return Task::done(Message::display_error(
@@ -1855,30 +2002,17 @@ impl App {
                         ));
                     }
 
-                    self.save.profiles.insert(
-                        id,
-                        library::Profile {
-                            id,
-                            name: self.profile_add_name.clone(),
-                            items: BTreeMap::new(),
-                            ..Default::default()
-                        },
-                    );
-                    self.selected_profile_id = Some(id);
-                    self.active_profile_combo = combo_box::State::new(
-                        self.save
-                            .profiles
-                            .values()
-                            .map(|p| &p.name)
-                            .cloned()
-                            .collect(),
-                    );
+                    self.profiles.insert(self.profile_add_name.clone(), profile);
+                    self.save.tracked_profiles.insert(name.to_owned());
+                    self.selected_profile_name = Some(name.to_owned().into_boxed_str());
+                    self.active_profile_combo =
+                        combo_box::State::new(self.save.tracked_profiles.iter().cloned().collect());
                 }
                 self.modal_stack.pop();
             }
             Message::ProfileAddEdited(name) => self.profile_add_name = name,
-            Message::ProfileAddItems(id, items) => {
-                self.save.profiles.entry(id).and_modify(|profile| {
+            Message::ProfileAddItems(name, items) => {
+                self.profiles.entry(name).and_modify(|profile| {
                     profile.items.extend(
                         items
                             .into_iter()
@@ -1888,9 +2022,9 @@ impl App {
                     profile.update_compatibility_issues(self.file_cache.clone(), &self.library);
                 });
             }
-            Message::ProfileDeletePressed(id) => {
+            Message::ProfileDeletePressed(name) => {
                 let (modal, mut rec) = AppModal::async_choose(
-                    AsyncDialogKey::Id(id),
+                    AsyncDialogKey::StringId(name.clone()),
                     "Delete Profile",
                     "Are you sure you want to delete this profile?",
                     vec!["No".to_string(), "Yes".to_string()],
@@ -1900,27 +2034,54 @@ impl App {
                 self.modal_stack.push(modal);
                 return Task::future(async move {
                     if let Some(1) = rec.next().await {
-                        Message::ProfileDeleteConfirmed(id)
+                        Message::ProfileDeleteConfirmed(name)
                     } else {
                         Message::CloseModal
                     }
                 });
             }
-            Message::ProfileDeleteConfirmed(id) => {
-                self.save.profiles.remove(&id);
-                if Some(id) == self.save.active_profile {
-                    self.save.active_profile = None;
+            Message::ProfileDeleteConfirmed(name) => {
+                if self.profiles.remove(&name).is_some() {
+                    self.save.tracked_profiles.remove(&name);
+                    if Some(&name) == self.save.active_profile.as_ref() {
+                        self.save.active_profile = None;
+                    }
                 }
             }
-            Message::ProfileRemoveItems(id, items) => {
-                self.save.profiles.entry(id).and_modify(|profile| {
-                    profile.items.retain(|id, _| !items.contains(id));
-                    profile.update_compatibility_issues(self.file_cache.clone(), &self.library);
-                });
+            Message::ProfileRemoveItems(name, items) => {
+                let Some(profile) = self.profiles.get_mut(&name) else {
+                    eprintln!("Attempted to access non-existent profile...");
+                    return Task::none();
+                };
 
-                if let Some(selected) = self.selected_profile_id
-                    && id == selected
-                    && let Some(profile) = self.save.profiles.get_mut(&selected)
+                let path = PROFILES_DIR.join(&name).join(library::PROFILE_DATA_NAME);
+                let Some(file) = path
+                    .exists()
+                    .then_some(std::fs::File::create(&path).ok())
+                    .flatten()
+                else {
+                    return Task::done(Message::display_error(
+                        "Write Error",
+                        format!("Failed to open {}", path.display()),
+                    ));
+                };
+
+                profile.items.retain(|id, _| !items.contains(id));
+                profile.update_compatibility_issues(self.file_cache.clone(), &self.library);
+
+                if let Err(err) = profile.save_into(file) {
+                    return Task::done(Message::display_error(
+                        "Profile Corrupted",
+                        format!(
+                            "Failed to write to {} when saving profile: {err:?}",
+                            path.display()
+                        ),
+                    ));
+                }
+
+                if let Some(selected) = &self.selected_profile_name
+                    && *name == **selected
+                    && let Some(profile) = self.profiles.get_mut(selected.as_ref())
                     && profile
                         .view_selected_item
                         .as_ref()
@@ -1930,9 +2091,9 @@ impl App {
                     profile.view_selected_item = None;
                 }
             }
-            Message::ProfileSelected(id) => {
-                self.selected_profile_id = Some(id);
-                if let Some(profile) = self.save.profiles.get(&id) {
+            Message::ProfileSelected(name) => {
+                self.selected_profile_name = Some(name.clone().into_boxed_str());
+                if let Some(profile) = self.profiles.get(&name) {
                     let mut tasks = Vec::new();
                     for id in profile.items.keys() {
                         if let Some(ModDetails::Workshop(details)) = self.file_cache.get_details(id)
@@ -1953,8 +2114,8 @@ impl App {
                     ));
                 }
 
-                if let Some(selected) = self.selected_profile_id
-                    && let Some(profile) = self.save.profiles.get_mut(&selected)
+                if let Some(selected) = &self.selected_profile_name
+                    && let Some(profile) = self.profiles.get_mut(selected.as_ref())
                 {
                     if Some(&id) == profile.view_selected_item.as_ref() {
                         profile.view_selected_item = None;
@@ -1962,7 +2123,7 @@ impl App {
                         profile.view_selected_item = Some(id.clone());
 
                         if let Some(task) = self.mod_editor.update(mod_edit::EditorMessage::Load(
-                            selected,
+                            selected.to_string(),
                             id,
                             PathBuf::from(&self.settings.download_directory),
                         )) {
@@ -1971,7 +2132,7 @@ impl App {
                     }
                 }
             }
-            Message::ProfileViewFolderRequested(id, name) => {
+            Message::ProfileViewFolderRequested(profile_name, name) => {
                 if !library::profile_folder::ALL.contains(&name.as_str()) {
                     return Task::done(Message::display_error(
                         "Does Not Exist",
@@ -1979,7 +2140,7 @@ impl App {
                     ));
                 }
 
-                let path = PROFILES_DIR.join(id.to_string()).join(name);
+                let path = PROFILES_DIR.join(&profile_name).join(name);
 
                 if let Err(err) = opener::open(&path) {
                     return Task::done(Message::display_error(
@@ -1988,7 +2149,7 @@ impl App {
                     ));
                 }
             }
-            Message::ProfileImportFolderRequested(id, name) => {
+            Message::ProfileImportFolderRequested(profile_name, name) => {
                 return Task::done(Message::SetBusy(true))
                     .chain(Task::perform({
                         let name = name.clone();
@@ -2018,7 +2179,7 @@ impl App {
                                 _ => {}
                             }
 
-                            let profile_dir = PROFILES_DIR.join(id.to_string());
+                            let profile_dir = PROFILES_DIR.join(&profile_name);
                             let dest = profile_dir.join(name);
                             if dest.try_exists()? {
                                 tokio::fs::remove_dir_all(&dest).await?;
@@ -2045,16 +2206,7 @@ impl App {
                         .with_string_default("Name", &collection.title)
                         .finish();
 
-                let next_unused = (0..usize::MAX)
-                    .find(|i| !self.save.profiles.contains_key(i))
-                    .expect("there should not reasonably be usize::MAX profiles");
-
-                let used_names = self
-                    .save
-                    .profiles
-                    .values()
-                    .map(|profile| profile.name.clone())
-                    .collect::<Vec<_>>();
+                let used_names = self.profiles.keys().cloned().collect::<HashSet<_>>();
 
                 return Task::batch([
                     Task::future(async move {
@@ -2073,12 +2225,14 @@ impl App {
                                         "Name In Use",
                                         "There is already a profile with this name.",
                                     )
+                                } else if let Err(message) = library::validate_profile_name(&name) {
+                                    Message::display_error("Invalid Name", message)
                                 } else {
                                     Message::Chained(vec![
-                                        Message::ProfileAddEdited(name),
+                                        Message::ProfileAddEdited(name.clone()),
                                         Message::ProfileAddCompleted(true),
                                         Message::ProfileAddItems(
-                                            next_unused,
+                                            name,
                                             collection.items.iter().map(ModId::from).collect(),
                                         ),
                                     ])
@@ -2092,11 +2246,9 @@ impl App {
             }
             Message::ProfilePageResized(resize) => self.handle_profile_resize(resize),
             Message::ActiveProfileSelected(name) => {
-                self.save.active_profile = self
-                    .save
-                    .profiles
-                    .iter()
-                    .find_map(|(id, p)| (p.name == name).then_some(*id))
+                if self.profiles.contains_key(&name) {
+                    self.save.active_profile = Some(name);
+                }
             }
 
             Message::LoadPrepareProfile(manual) => {
@@ -2130,8 +2282,8 @@ impl App {
                     ));
                 }
 
-                if let Some(active) = self.save.active_profile
-                    && let Some(profile) = self.save.profiles.get(&active)
+                if let Some(active) = &self.save.active_profile
+                    && let Some(profile) = self.profiles.get(active)
                 {
                     if let Err(err) = loading::bootstrap_load_profile(
                         profile,
@@ -2659,14 +2811,14 @@ impl App {
             row(library::profile_folder::ALL.iter().map(|name| {
                 button(text!("View {name}"))
                     .on_press_with(|| {
-                        Message::ProfileViewFolderRequested(profile.id, name.to_string())
+                        Message::ProfileViewFolderRequested(profile.name(), name.to_string())
                     })
                     .into()
             }))
             .extend(library::profile_folder::ALL.iter().map(|name| {
                 button(text!("Import {name}"))
                     .on_press_with(|| {
-                        Message::ProfileImportFolderRequested(profile.id, name.to_string())
+                        Message::ProfileImportFolderRequested(profile.name(), name.to_string())
                     })
                     .style(button::secondary)
                     .into()
@@ -2674,7 +2826,7 @@ impl App {
             .push(
                 button("Delete Profile")
                     .style(button::danger)
-                    .on_press(Message::ProfileDeletePressed(profile.id)),
+                    .on_press_with(|| Message::ProfileDeletePressed(profile.name())),
             )
             .wrap(),
             text("Mods").size(20),
@@ -2743,7 +2895,7 @@ impl App {
                 if !issues.is_empty() {
                     row![
                         button("X").style(button::danger).on_press_with(|| {
-                            Message::ProfileRemoveItems(profile.id, vec![id.clone()])
+                            Message::ProfileRemoveItems(profile.name(), vec![id.clone()])
                         }),
                         tooltip!(
                             select,
@@ -2771,7 +2923,7 @@ impl App {
                 button("Remove Mod")
                     .style(button::danger)
                     .on_press_with(|| Message::ProfileRemoveItems(
-                        profile.id,
+                        profile.name(),
                         vec![item_id.clone()]
                     ))
             ],
@@ -2970,7 +3122,7 @@ impl App {
         iced_aw::card(text(title).width(Fill), column![scrollable(text(body)),])
             .foot(row(options.iter().enumerate().map(|(i, display)| {
                 button(text(display))
-                    .on_press(Message::AsyncChooseResolve(*key, i))
+                    .on_press_with(move || Message::AsyncChooseResolve(key.clone(), i))
                     .into()
             })))
             .max_height(512.0)
@@ -3188,11 +3340,7 @@ impl App {
                     combo_box(
                         &self.active_profile_combo,
                         "Select Profile...",
-                        self.save.active_profile.and_then(|id| self
-                            .save
-                            .profiles
-                            .iter()
-                            .find_map(|(i, p)| (*i == id).then_some(&p.name))),
+                        self.save.active_profile.as_ref(),
                         Message::ActiveProfileSelected,
                     )
                 ),
@@ -3762,10 +3910,7 @@ impl App {
         let grid = iced_aw::grid![iced_aw::grid_row![
             checkbox(
                 "",
-                self.save
-                    .profiles
-                    .values()
-                    .all(|profile| profile.add_selected)
+                self.profiles.values().all(|profile| profile.add_selected)
             )
             .on_toggle(Message::LibraryAddToProfileToggleAll),
             text("Name")
@@ -3774,10 +3919,11 @@ impl App {
 
         iced_aw::card(
             "Add to Profile",
-            scrollable(grid.extend(self.save.profiles.iter().map(|(id, profile)| {
+            scrollable(grid.extend(self.profiles.iter().map(|(name, profile)| {
                 iced_aw::grid_row![
-                    checkbox("", profile.add_selected)
-                        .on_toggle(|toggle| Message::LibraryAddToProfileToggled(*id, toggle)),
+                    checkbox("", profile.add_selected).on_toggle(|toggle| {
+                        Message::LibraryAddToProfileToggled(name.clone(), toggle)
+                    }),
                     text(profile.name.as_str())
                 ]
             }))),
@@ -4024,7 +4170,7 @@ impl App {
 
         self.library
             .update_missing_dependencies(self.file_cache.clone());
-        for profile in self.save.profiles.values_mut() {
+        for profile in self.profiles.values_mut() {
             profile.update_compatibility_issues(self.file_cache.clone(), &self.library);
         }
     }

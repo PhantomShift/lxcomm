@@ -116,9 +116,10 @@ impl AsyncDialog {
             })),
         )
         .foot(row![
-            button("Cancel").on_press(Message::AsyncDialogResolved(self.key, false)),
+            button("Cancel")
+                .on_press_with(|| Message::AsyncDialogResolved(self.key.clone(), false)),
             horizontal_space(),
-            button("Submit").on_press(Message::AsyncDialogResolved(self.key, true))
+            button("Submit").on_press_with(|| Message::AsyncDialogResolved(self.key.clone(), true))
         ])
     }
 }
@@ -236,8 +237,9 @@ impl App {
         use iced::widget::pane_grid;
 
         let profile = self
-            .selected_profile_id
-            .and_then(|id| self.save.profiles.get(&id));
+            .selected_profile_name
+            .as_ref()
+            .and_then(|name| self.profiles.get(name.as_ref()));
 
         pane_grid(
             self.profile_pane_state.as_ref(),
@@ -250,17 +252,20 @@ impl App {
                             };
                         }
 
-                        let select_col = column(self.save.profiles.values().map(|profile| {
-                            let style =
-                                if self.selected_profile_id.is_some_and(|id| id == profile.id) {
-                                    button::secondary
-                                } else {
-                                    button::primary
-                                };
+                        let select_col = column(self.profiles.values().map(|profile| {
+                            let style = if self
+                                .selected_profile_name
+                                .as_ref()
+                                .is_some_and(|name| **name == *profile.name)
+                            {
+                                button::secondary
+                            } else {
+                                button::primary
+                            };
 
                             sel_button!(profile.name.as_str())
                                 .style(style)
-                                .on_press(Message::ProfileSelected(profile.id))
+                                .on_press_with(|| Message::ProfileSelected(profile.name()))
                                 .into()
                         }))
                         .push(sel_button!("Add Profile +").on_press(Message::ProfileAddPressed));

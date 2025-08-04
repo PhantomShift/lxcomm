@@ -1,6 +1,6 @@
 [package]
 name = "lxcomm"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 license = "MIT OR APACHE-2.0"
 repository = "https://github.com/phantomshift/lxcomm"
@@ -58,6 +58,7 @@ governor = "0.10.0"
 portable-pty = "0.8.1"
 indexmap = { version = "2.10.0", features = ["serde"] }
 dashmap = "6.1.0"
+serde_with = "3.14.0"
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 iced_fonts = { git = "https://github.com/Redhawk18/iced_fonts.git", version = "0.2.0", features = ["fontawesome"], rev = "982eb5ac9a02629cc9af824e3816376e4f52fc03" }
