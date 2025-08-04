@@ -268,12 +268,6 @@ pub fn link_profile_local_files<L: AsRef<Path>>(
         ),
     );
     ensure!(
-        local_path.as_ref().join("Config").exists(),
-        format!(
-            "cannot find 'Config' folder in {path_display}, please launch the game at least once if this is the correct folder"
-        )
-    );
-    ensure!(
         local_path.as_ref().join("Logs").exists(),
         format!(
             "cannot find 'Logs' folder in {path_display}, please launch the game at least once if this is the correct folder"
