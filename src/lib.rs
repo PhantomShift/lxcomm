@@ -3273,17 +3273,18 @@ impl App {
         )
         .push(button("Add Directory").on_press(SettingsMessage::AddModDirectory.into()));
 
-        let col = col.push(vertical_space());
-        col.push(row![
+        let scroll = scrollable(col.padding(16)).height(Fill);
+
+        let bottom = row![
             horizontal_space(),
             button("Reset to Default").on_press(SettingsMessage::ResetToDefault.into()),
             button("Reset to Saved").on_press(SettingsMessage::ResetToSaved.into()),
             button("Save").on_press_maybe(
                 (self.settings != self.settings_editing).then_some(SettingsMessage::Save.into())
             )
-        ])
-        .padding(16)
-        .into()
+        ];
+
+        column![scroll, bottom].into()
     }
 
     fn view(&self) -> Element<'_, Message> {
