@@ -3822,6 +3822,9 @@ impl App {
                         text!("Last Updated - {formatted}")
                     ],
                     horizontal_space(),
+                    button("View Change Notes").on_press_with(move || web::open_browser(format!(
+                        "https://steamcommunity.com/sharedfiles/filedetails/changelog/{id}"
+                    ))),
                     view_details!(id),
                     button("Download").on_press(Message::DownloadPushPending(vec![id]))
                 ]
