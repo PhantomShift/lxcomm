@@ -1920,6 +1920,7 @@ impl App {
                     .and_modify(|profile| profile.add_selected = toggle);
             }
             Message::LibraryAddToProfileConfirm(ids) => {
+                let mut errors = Vec::new();
                 for profile in self
                     .profiles
                     .values_mut()
@@ -1932,8 +1933,18 @@ impl App {
                             .or_insert_with(library::LibraryItemSettings::default);
                     }
                     profile.update_compatibility_issues(self.file_cache.clone(), &self.library);
+
+                    if let Err(err) = profile.save_state_in(PROFILES_DIR.as_path()) {
+                        errors.push(eyre::Error::new(err).wrap_err(format!("Failed to write to profile '{}', added mods will not be present when LXCOMM next launches.", profile.name)))
+                    }
                 }
                 self.modal_stack.pop();
+                for error in errors {
+                    let _ = self.update(Message::display_error(
+                        "Error Updating Profile",
+                        format!("{error:?}"),
+                    ));
+                }
             }
             Message::LibraryDeleteRequest => self.modal_stack.push(AppModal::LibraryDeleteRequest),
             Message::LibraryDeleteConfirm => {
@@ -2012,6 +2023,7 @@ impl App {
             }
             Message::ProfileAddEdited(name) => self.profile_add_name = name,
             Message::ProfileAddItems(name, items) => {
+                let mut err = None;
                 self.profiles.entry(name).and_modify(|profile| {
                     profile.items.extend(
                         items
@@ -2020,7 +2032,16 @@ impl App {
                     );
 
                     profile.update_compatibility_issues(self.file_cache.clone(), &self.library);
+
+                    err = profile.save_state_in(PROFILES_DIR.as_path()).err();
                 });
+
+                if let Some(err) = err {
+                    return Task::done(Message::display_error(
+                        "Error Updating Profile",
+                        format!("Failed to write changes to disk: {err:?}"),
+                    ));
+                }
             }
             Message::ProfileDeletePressed(name) => {
                 let (modal, mut rec) = AppModal::async_choose(
