@@ -8,6 +8,30 @@ pub mod symbols {
     pub use fontawesome::xmark;
     use iced_fonts::fontawesome;
 }
+
+#[cfg(target_os = "linux")]
+pub mod extensions {
+    pub trait NotificationExtLinux {
+        fn desktop_entry(&mut self, name: &str) -> &mut Self;
+        fn auto_desktop_entry(&mut self) -> &mut Self {
+            let binary = std::env::current_exe().ok();
+            let name = binary
+                .as_ref()
+                .and_then(|path| path.file_name())
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+
+            self.desktop_entry(name)
+        }
+    }
+
+    impl NotificationExtLinux for notify_rust::Notification {
+        fn desktop_entry(&mut self, name: &str) -> &mut Self {
+            self.hint(notify_rust::Hint::DesktopEntry(name.to_owned()))
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
 pub mod symbols {
     use iced::widget::text;

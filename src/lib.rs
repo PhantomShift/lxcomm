@@ -59,6 +59,9 @@ use crate::{
 use crate::{collections::CollectionSource, mod_edit::EditorMessage};
 use crate::{extensions::DetailsExtension, web::resolve_all_dependencies};
 
+#[cfg(target_os = "linux")]
+use crate::platform::extensions::NotificationExtLinux;
+
 pub mod browser;
 pub mod collections;
 pub mod extensions;
@@ -1528,21 +1531,6 @@ impl App {
             Message::DownloadCancelRequested(id) => {
                 if let Some(_progress) = self.download_queue.remove(&id) {
                     self.errorred_downloads.insert(id, "Cancelled".to_string());
-                    #[cfg(target_os = "linux")]
-                    if self.settings.notify_progress
-                        && let Some(notif_id) = NOTIF_CACHE.remove(&id)
-                        && let Some(details) = self.file_cache.get_details(ModId::Workshop(id))
-                    {
-                        let mut notif = notify_rust::Notification::new();
-                        let title = details.title();
-                        notif
-                            .appname("LXCOMM")
-                            .summary(&format!("{title} Not Downloaded"))
-                            .body("Download was cancelled")
-                            .timeout(-1)
-                            .id(notif_id);
-                        let _ = notif.show();
-                    }
                 }
             }
             Message::SteamCMDDownloadRequested(id) => {
@@ -1579,6 +1567,8 @@ impl App {
                     let title = details.title();
                     notif
                         .appname("LXCOMM")
+                        .icon("download")
+                        .auto_desktop_entry()
                         .summary(&format!("Downloaded {title}"))
                         .body("Downloaded Completed")
                         .timeout(-1)
@@ -1606,7 +1596,9 @@ impl App {
                             #[cfg(target_os = "linux")]
                             notif
                                 .hint(notify_rust::Hint::Category("TransferComplete".to_string()))
-                                .hint(notify_rust::Hint::Resident(true));
+                                .hint(notify_rust::Hint::Resident(true))
+                                .icon("download")
+                                .auto_desktop_entry();
 
                             #[cfg(target_os = "linux")]
                             let result = notif.show_async().await;
@@ -1635,6 +1627,8 @@ impl App {
                     let title = details.title();
                     notif
                         .appname("LXCOMM")
+                        .icon("download")
+                        .auto_desktop_entry()
                         .summary(&format!("Error Downloading {title}"))
                         .body(&message)
                         .timeout(-1)
@@ -1669,6 +1663,8 @@ impl App {
                         let mut notif = notify_rust::Notification::new();
                         notif
                             .appname("LXCOMM")
+                            .icon("download")
+                            .auto_desktop_entry()
                             .summary(&format!("Downloading {title}"))
                             .body(&format!(
                                 "{} of {} Downloaded",
