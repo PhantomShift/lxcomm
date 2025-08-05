@@ -6,9 +6,12 @@ use std::{
 
 use apply::Apply;
 use fuse_rust::Fuse;
+use iced::widget::{column, container, horizontal_rule, rich_text, scrollable, span, text};
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    Message, PROFILES_DIR,
     extensions::Truncatable,
     files::{Cache, ModDetails},
     xcom_mod::{self, ModId},
@@ -175,6 +178,31 @@ impl Library {
 
         self.missing_dependencies = all_missing;
     }
+
+    pub fn get_provider(&self, dlc_name: &str, cache: &Cache) -> Option<&ModId> {
+        self.compatibility
+            .iter()
+            .find(|(id, compatibility)| {
+                cache
+                    .get_mod_metadata(id)
+                    .is_some_and(|data| data.dlc_name == dlc_name)
+                    || compatibility.ignore_required.contains(dlc_name)
+            })
+            .map(|(id, _)| id)
+    }
+
+    pub fn get_all_providers(&self, dlc_name: &str, cache: &Cache) -> Vec<&ModId> {
+        self.compatibility
+            .iter()
+            .filter(|(id, compatibility)| {
+                cache
+                    .get_mod_metadata(id)
+                    .is_some_and(|data| data.dlc_name == dlc_name)
+                    || compatibility.ignore_required.contains(dlc_name)
+            })
+            .map(|(id, _)| id)
+            .collect()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -336,6 +364,103 @@ impl Profile {
         let path = root.join(&self.name).join(PROFILE_DATA_NAME);
         let file = std::fs::File::create(path)?;
         self.save_into(file)
+    }
+
+    pub fn view_details(&self, library: &Library, cache: &Cache) -> iced::Element<'_, Message> {
+        let name = &self.name;
+        let location = PROFILES_DIR.join(name);
+        let loc_disp = location.display();
+        let total_mods = self.items.len();
+
+        let location_text = rich_text([
+            span("Location: "),
+            span(loc_disp.to_string()).link(location),
+        ])
+        .on_link_click(|path: PathBuf| {
+            let _ = opener::open(path);
+            Message::None
+        });
+
+        let get_title = |id: &ModId| {
+            library
+                .items
+                .get(id)
+                .map(|item| item.title.as_str())
+                .unwrap_or("UNKNOWN")
+        };
+
+        container(
+            column!()
+                .push(text!("Name: {name}"))
+                .push(location_text)
+                .push(text!("Total Mods: {total_mods}"))
+                .push(horizontal_rule(2))
+                .push(text("Settings").size(24))
+                .push(text("Empty for now..."))
+                .push(horizontal_rule(2))
+                .push((!self.compatibility_issues.is_empty()).then_some(text("Problems").size(24)))
+                .push(column(self.compatibility_issues.iter().map(
+                    |(id, issues)| {
+                        let details = cache.get_details(id);
+                        let title = details.as_ref().map(ModDetails::title).unwrap_or("UNKNOWN");
+                        column!(text!("Issues with {title} ({id})").size(20))
+                            .extend(issues.iter().map(|issue| match issue {
+                                CompatibilityIssue::Incompatible(dlc_name) => {
+                                    let provider_text = if let Some(provider) =
+                                        library.get_provider(dlc_name, cache)
+                                    {
+                                        format!(
+                                            " (Provided by {} | {provider})",
+                                            get_title(provider)
+                                        )
+                                    } else {
+                                        String::new()
+                                    };
+
+                                    text!(
+                                        "Mod is incompatible with DLCName {dlc_name}{provider_text}"
+                                    )
+                                    .into()
+                                }
+                                CompatibilityIssue::MissingRequired(dlc_name) => {
+                                    let candidate_text = library
+                                        .get_all_providers(dlc_name, cache)
+                                        .into_iter()
+                                        .map(|id| {
+                                            format!(
+                                                "{} ({})",
+                                                get_title(id),
+                                                id.to_string().truncated_overflow(12)
+                                            )
+                                        })
+                                        .join(", ");
+                                    let candidate_text = if candidate_text.is_empty() {
+                                        candidate_text
+                                    } else {
+                                        format!(" - Downloaded mods that provide {dlc_name}: {candidate_text}")
+                                    };
+
+                                    text!("Mod depends on DLCName {dlc_name} which is not currently in the profile{candidate_text}").into()
+                                }
+                                // Potential TODO - provide a way to override this issue
+                                CompatibilityIssue::MissingWorkshop(_id, name) => {
+                                    text!("{name} is listed as a dependency by the Workshop page (potentially ignorable)").into()
+                                }
+                                CompatibilityIssue::Overlapping(name, provided) => {
+                                    text!("{name} provides the same DLCNames as {title}: {}", provided.iter().join(", ")).into()
+                                }
+                                CompatibilityIssue::Unknown => {
+                                    text!("This Workshop mod is missing its information").into()
+                                }
+                            })).spacing(4)
+                            .into()
+                    },
+                )))
+                .spacing(8),
+        )
+        .padding(16)
+        .apply(scrollable)
+        .into()
     }
 }
 

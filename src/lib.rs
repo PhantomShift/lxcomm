@@ -241,6 +241,7 @@ pub enum Message {
     ProfileImportFolderRequested(String, String),
     ProfileImportCollectionRequested(Arc<Collection>),
     ProfilePageResized(pane_grid::ResizeEvent),
+    ProfileViewDetails(String),
     ActiveProfileSelected(String),
 
     LoadPrepareProfile(bool),
@@ -347,6 +348,7 @@ pub enum AppModal {
     LibraryDeleteRequest,
     SteamGuardCodeRequest,
     ProfileAddRequest,
+    ProfileDetails(String),
     ItemDetailedView(ModId),
     CollectionDetailedView(CollectionSource),
     Busy,
@@ -398,6 +400,7 @@ impl AppModal {
             LibraryDeleteRequest => true,
             SteamGuardCodeRequest => false,
             ProfileAddRequest => true,
+            ProfileDetails(_) => true,
             ItemDetailedView(_) => true,
             CollectionDetailedView(_) => true,
             Busy => false,
@@ -2266,6 +2269,9 @@ impl App {
                 ]);
             }
             Message::ProfilePageResized(resize) => self.handle_profile_resize(resize),
+            Message::ProfileViewDetails(name) => {
+                self.modal_stack.push(AppModal::ProfileDetails(name));
+            }
             Message::ActiveProfileSelected(name) => {
                 if self.profiles.contains_key(&name) {
                     self.save.active_profile = Some(name);
@@ -2829,7 +2835,11 @@ impl App {
         profile: &'a library::Profile,
     ) -> widget::Column<'a, Message> {
         column![
-            row(library::profile_folder::ALL.iter().map(|name| {
+            row!(
+                button("View Details")
+                    .on_press_with(|| Message::ProfileViewDetails(profile.name()))
+            )
+            .extend(library::profile_folder::ALL.iter().map(|name| {
                 button(text!("View {name}"))
                     .on_press_with(|| {
                         Message::ProfileViewFolderRequested(profile.name(), name.to_string())
@@ -3317,6 +3327,16 @@ impl App {
                         }
                         AppModal::LibraryDeleteRequest => self.library_delete_request_modal(),
                         AppModal::ProfileAddRequest => self.profile_add_modal(),
+                        AppModal::ProfileDetails(name) => {
+                            container(container(column![
+                                row![container(text("Profile Details").size(24)).padding(4), horizontal_space(), button("X").style(button::danger).on_press(Message::CloseModal)],
+                                if let Some(profile) = self.profiles.get(name) {
+                                    profile.view_details(&self.library, &self.file_cache)
+                                } else {
+                                    text("Non-existent profile...?").into()
+                                }
+                            ]).style(container::rounded_box).height(Fill).width(Fill)).padding(16).into()
+                        }
                         AppModal::AddToProfileRequest(ids) => self.add_to_profile_modal(ids),
                         AppModal::ItemDetailedView(id) => self.view_item_detailed(id),
                         AppModal::CollectionDetailedView(source) => self.collections.view_collection_detailed(self, source),
