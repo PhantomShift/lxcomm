@@ -333,7 +333,7 @@ impl Profile {
     }
 
     pub fn save_state_in(&self, root: &Path) -> std::io::Result<()> {
-        let path = root.join(&self.name);
+        let path = root.join(&self.name).join(PROFILE_DATA_NAME);
         let file = std::fs::File::create(path)?;
         self.save_into(file)
     }
