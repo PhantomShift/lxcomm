@@ -1,6 +1,5 @@
 #![feature(try_blocks)]
 #![feature(path_add_extension)]
-#![feature(iter_map_windows)]
 // For windows soft links
 #![cfg_attr(target_os = "windows", feature(junction_point))]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
