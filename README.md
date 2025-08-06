@@ -101,4 +101,4 @@ In order of "whenever the hell it pops up in my head":
 ## License
 
 lxcomm is dual-licensed under [MIT](LICENSE-MIT) or [Apache License 2.0](LICENSE-APACHE) at a given contributor's choice,
-falling back to Apache 2.0 unless otherwise stated.
+defaulting to being dual-licensed under each's terms unless explicitly stated.
