@@ -82,6 +82,36 @@ pub fn link_dirs<F: AsRef<Path>, T: AsRef<Path>>(from: F, to: T) -> Result<(), s
     Ok(())
 }
 
+/// First attempts to rename F to T, falling back to directly copying if
+/// F and T are on different mount points and deleting F.
+/// Additionally errors if F is not a directory or T exists and is not a directory.
+pub fn move_dirs<F: AsRef<Path>, T: AsRef<Path>>(from: F, to: T) -> Result<(), std::io::Error> {
+    if !from.as_ref().is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "from must be a directory",
+        ));
+    }
+    if to.as_ref().try_exists()? && !to.as_ref().is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "to must be a directory",
+        ));
+    }
+
+    if let Err(err) = std::fs::rename(from.as_ref(), to.as_ref()) {
+        match err.kind() {
+            std::io::ErrorKind::CrossesDevices => {
+                dircpy::copy_dir(from.as_ref(), to.as_ref())?;
+                std::fs::remove_dir_all(from)?;
+            }
+            _ => return Err(err),
+        }
+    }
+
+    Ok(())
+}
+
 pub fn get_all_items_directory<P: Into<PathBuf>>(download_dir: P) -> PathBuf {
     let mut path = download_dir.into();
     path.extend(["steamapps", "workshop", "content", &XCOM_APPID.to_string()]);
@@ -564,4 +594,19 @@ pub fn find_directories_matching<P: Into<PathBuf>>(
         }
     }))
     .abortable()
+}
+
+pub fn gen_hash(source: &[u8]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"LXCOMM");
+    hasher.update(source);
+    hasher.finalize().to_hex().to_string()
+}
+
+pub fn gen_partial_hash(source: &Path, up_to: usize) -> std::io::Result<String> {
+    let file = std::fs::File::open(source)?;
+    let mut buf_reader = BufReader::new(file);
+    let mut buf = vec![0; up_to];
+    let _ = buf_reader.read_exact(&mut buf);
+    Ok(gen_hash(&buf))
 }

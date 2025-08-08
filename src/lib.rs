@@ -46,6 +46,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use steam_rs::{self, Steam, published_file_service::query_files::PublishedFiles};
 use strum::{Display, EnumIter, IntoEnumIterator};
+use zip::ZipArchive;
 
 use crate::{
     browser::WorkshopBrowser,
@@ -53,6 +54,7 @@ use crate::{
     extensions::Truncatable,
     files::ModDetails,
     platform::symbols,
+    snapshot::SnapshotContainer,
     widgets::{AsyncDialog, AsyncDialogField},
     xcom_mod::ModId,
 };
@@ -72,6 +74,7 @@ pub mod markup;
 pub mod metadata;
 pub mod mod_edit;
 pub mod platform;
+pub mod snapshot;
 pub mod steam_manifest;
 pub mod steamcmd;
 pub mod web;
@@ -244,6 +247,12 @@ pub enum Message {
     ProfileImportCollectionRequested(Arc<Collection>),
     ProfilePageResized(pane_grid::ResizeEvent),
     ProfileViewDetails(String),
+    ProfileExportSnapshotRequested(String),
+    ProfileImportSnapshotRequested,
+    ProfileImportBasicSnapshot(String, Arc<ZipArchive<std::fs::File>>),
+    ProfileImportIncrementalSnapshot(String, Arc<ZipArchive<std::fs::File>>),
+    ProfileImportSnapshotCompleted(library::Profile),
+    ProfileGenerateAutomaticSnapshot(String, snapshot::SnapshotType),
     ActiveProfileSelected(String),
 
     LoadPrepareProfile(bool),
@@ -389,6 +398,7 @@ pub enum AsyncDialogKey {
     DownloadAllConfirm,
     DownloadMultipleConfirm,
     ProfileImportCollection,
+    ProfileImportSnapshot,
     Id(usize),
     StringId(String),
 }
@@ -2267,6 +2277,258 @@ impl App {
             Message::ProfileViewDetails(name) => {
                 self.modal_stack.push(AppModal::ProfileDetails(name));
             }
+            Message::ProfileExportSnapshotRequested(name) => {
+                if !self.save.tracked_profiles.contains(&name) {
+                    return Task::none();
+                }
+
+                let source = PROFILES_DIR.join(&name);
+                if !source.exists() {
+                    return Task::done(Message::display_error(
+                        "Profile Not Found",
+                        format!("Failed to read profile directory for '{name}'."),
+                    ));
+                }
+
+                let task = Task::future(async move {
+                    let now = chrono::Utc::now();
+                    if let Some(destination) = rfd::AsyncFileDialog::new()
+                        .set_title("Pick Snapshot Output")
+                        .add_filter("Zip File", &["zip"])
+                        .set_directory(snapshot::SNAPSHOTS_DIR.as_path())
+                        .set_file_name(format!("{name}_{}.zip", now.format("%Y.%m.%d_%Hh%Mm%Ss")))
+                        .save_file()
+                        .await
+                        .map(|handle| {
+                            if handle.path().extension().is_some_and(|ext| ext == "zip") {
+                                handle.path().to_path_buf()
+                            } else {
+                                handle.path().with_added_extension("zip")
+                            }
+                        })
+                    {
+                        match snapshot::BasicSnapshotBuilder::new(source, destination.clone())
+                            .comment(format!(
+                                "Snapshot of '{name}' automatically generated at {now}."
+                            ))
+                            .finalize()
+                        {
+                            Err(err) => Message::display_error(
+                                "Snapshot Failed",
+                                eyre::Error::new(err)
+                                    .wrap_err("Failed to load snapshot")
+                                    .to_string(),
+                            ),
+                            Ok(name) => Message::display_error(
+                                "Success",
+                                format!(
+                                    "Snapshot '{name}' successfully exported to '{}'",
+                                    destination.display()
+                                ),
+                            ),
+                        }
+                    } else {
+                        Message::None
+                    }
+                });
+
+                return Task::done(Message::SetBusy(true))
+                    .chain(task)
+                    .chain(Task::done(Message::SetBusy(false)));
+            }
+            Message::ProfileImportSnapshotRequested => {
+                let used_names = self.save.tracked_profiles.clone();
+                let (dialog, mut receiver) = AsyncDialog::builder(
+                    AsyncDialogKey::ProfileImportSnapshot,
+                    "Pick Name",
+                    "Pick a name for the imported profile",
+                )
+                .with_string("Profile Name")
+                .finish();
+
+                let task = Task::done(Message::SetBusy(true))
+                    .chain(Task::done(Message::OpenModal(Arc::new(
+                        AppModal::AsyncDialog(dialog),
+                    ))))
+                    .chain(Task::future(async move {
+                        if let Some(response) = receiver.next().await.flatten() {
+                            let name = response
+                                .get_string("Profile Name")
+                                .map(str::to_owned)
+                                .unwrap_or_default();
+
+                            if let Err(err) = library::validate_profile_name(&name) {
+                                return Message::display_error("Invalid Profile Name", err);
+                            };
+
+                            if used_names.contains(&name) {
+                                return Message::display_error(
+                                    "Invalid Profile Name",
+                                    format!("Profile with name '{name}' already exists."),
+                                );
+                            }
+
+                            let Some(path) = rfd::AsyncFileDialog::new()
+                                .set_title("Pick Snapshot")
+                                .add_filter("Zip File", &["zip"])
+                                .set_directory(snapshot::SNAPSHOTS_DIR.as_path())
+                                .pick_file()
+                                .await
+                                .map(|handle| handle.path().to_path_buf())
+                            else {
+                                return Message::None;
+                            };
+
+                            let archive = match std::fs::File::open(&path)
+                                .and_then(|f| ZipArchive::new(f).map_err(Into::into))
+                            {
+                                Err(err) => {
+                                    let err = eyre::Error::new(err)
+                                        .wrap_err("Could not read picked zip archive.");
+                                    return Message::display_error(
+                                        "Invalid Archive",
+                                        format!("{err:?}"),
+                                    );
+                                }
+                                Ok(archive) => archive,
+                            };
+
+                            match archive.snapshot_type() {
+                                snapshot::SnapshotType::Invalid => Message::display_error(
+                                    "Invalid Archive",
+                                    "The picked zip archive was not an LXCOMM snapshot.",
+                                ),
+                                snapshot::SnapshotType::Basic => {
+                                    Message::ProfileImportBasicSnapshot(name, Arc::new(archive))
+                                }
+                                snapshot::SnapshotType::Incremental => {
+                                    Message::ProfileImportIncrementalSnapshot(
+                                        name,
+                                        Arc::new(archive),
+                                    )
+                                }
+                            }
+                        } else {
+                            Message::None
+                        }
+                    }))
+                    .chain(Task::done(Message::SetBusy(false)));
+
+                return task;
+            }
+            Message::ProfileImportBasicSnapshot(name, archive) => {
+                let Ok(archive) = Arc::try_unwrap(archive) else {
+                    return Task::done(Message::display_error(
+                        "Unexpected Error",
+                        "Unexpected error occurred attempting to import snapshot. Please report this to the devs.",
+                    ));
+                };
+
+                return Task::done(Message::busy_message("Importing snapshot..."))
+                    .chain(Task::future(async move {
+                        match tokio::task::spawn_blocking(move || {
+                            snapshot::load_basic_snapshot(name.clone(), &PROFILES_DIR, archive)
+                        })
+                        .await
+                        {
+                            Err(err) => Message::display_error(
+                                "Unexpected Error",
+                                format!("Unexpected error while importing profile: {err:#?}"),
+                            ),
+                            Ok(Err(err)) => {
+                                let err =
+                                    eyre::Error::new(err).wrap_err("Failed to import snapshot");
+                                Message::display_error("Error Importing", format!("{err:#?}"))
+                            }
+                            Ok(Ok(profile)) => Message::ProfileImportSnapshotCompleted(profile),
+                        }
+                    }))
+                    .chain(Task::done(Message::SetBusy(false)));
+            }
+            Message::ProfileImportIncrementalSnapshot(name, archive) => {
+                let Ok(mut archive) = Arc::try_unwrap(archive) else {
+                    return Task::done(Message::display_error(
+                        "Unexpected Error",
+                        "Unexpected error occurred attempting to import snapshot. Please report this to the devs.",
+                    ));
+                };
+
+                let timestamps = match snapshot::list_incremental_snapshots(&mut archive) {
+                    Err(err) => {
+                        let err = eyre::Error::new(err).wrap_err("Failed to read from archive.");
+                        return Task::done(Message::display_error(
+                            "Error Reading Archive",
+                            format!("{err:#}"),
+                        ));
+                    }
+                    Ok(list) => list,
+                };
+
+                let _ = self.update(Message::busy_message("Importing snapshot..."));
+
+                let receiver = if timestamps.len() <= 1 {
+                    None
+                } else {
+                    let (dialog, receiver) = AsyncDialog::builder(
+                        AsyncDialogKey::ProfileImportSnapshot,
+                        "Pick Snapshot Date",
+                        "Pick date to load snapshot from.",
+                    )
+                    .with_string_enum(
+                        "Timestamp",
+                        timestamps.iter().filter_map(|i| {
+                            let date_time = chrono::DateTime::from_timestamp(*i, 0)?
+                                .with_timezone(&chrono::Local);
+                            Some(format!("{}", date_time.format("%c")))
+                        }),
+                    )
+                    .finish();
+                    self.modal_stack.push(AppModal::AsyncDialog(dialog));
+                    Some(receiver)
+                };
+
+                return Task::future(async move {
+                    let stop_at = if let Some(mut receiver) = receiver {
+                        receiver.next().await.flatten().and_then(|response| {
+                            response
+                                .get_string_enum("Timestamp")
+                                .and_then(|formatted| {
+                                    chrono::DateTime::parse_from_str(formatted, "%c").ok()
+                                })
+                                .map(|dt| dt.timestamp())
+                        })
+                    } else {
+                        None
+                    };
+
+                    match tokio::task::spawn_blocking(move || {
+                        snapshot::load_incremental_snapshot(
+                            name.clone(),
+                            &PROFILES_DIR,
+                            archive,
+                            stop_at,
+                        )
+                    })
+                    .await
+                    {
+                        Err(err) => Message::display_error(
+                            "Unexpected Error",
+                            format!("Unexpected error while importing profile: {err:#?}"),
+                        ),
+                        Ok(Err(err)) => {
+                            let err = eyre::Error::new(err).wrap_err("Failed to import snapshot");
+                            Message::display_error("Error Importing", format!("{err:#?}"))
+                        }
+                        Ok(Ok(profile)) => Message::ProfileImportSnapshotCompleted(profile),
+                    }
+                })
+                .chain(Task::done(Message::SetBusy(false)));
+            }
+            Message::ProfileImportSnapshotCompleted(profile) => {
+                self.save.tracked_profiles.insert(profile.name());
+                self.profiles.insert(profile.name(), profile);
+            }
+            Message::ProfileGenerateAutomaticSnapshot(name, snapshot_type) => todo!(),
             Message::ActiveProfileSelected(name) => {
                 if self.profiles.contains_key(&name) {
                     self.save.active_profile = Some(name);
@@ -2849,6 +3111,11 @@ impl App {
                     .style(button::secondary)
                     .into()
             }))
+            .push(
+                button("Export Snapshot")
+                    .style(button::success)
+                    .on_press_with(|| Message::ProfileExportSnapshotRequested(profile.name()))
+            )
             .push(
                 button("Delete Profile")
                     .style(button::danger)

@@ -1,8 +1,8 @@
 use apply::Apply;
 use derivative::Derivative;
 use iced::widget::{
-    button, checkbox, column, container, horizontal_space, pane_grid, row, text, text_input,
-    toggler,
+    button, checkbox, column, container, horizontal_space, pane_grid, pick_list, row, text,
+    text_input, toggler,
 };
 use iced_aw::widget::labeled_frame::LabeledFrame;
 
@@ -30,6 +30,10 @@ pub enum AsyncDialogField {
     Number(i64),
     Toggle(bool),
     Checkbox(bool),
+    StringEnum {
+        current: Option<String>,
+        options: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +57,13 @@ impl AsyncDialogFields {
     pub fn get_bool<S: AsRef<str>>(&self, name: S) -> Option<bool> {
         match self.0.get(name.as_ref()) {
             Some(AsyncDialogField::Toggle(b) | AsyncDialogField::Checkbox(b)) => Some(*b),
+            _ => None,
+        }
+    }
+
+    pub fn get_string_enum<S: AsRef<str>>(&self, name: S) -> Option<&str> {
+        match self.0.get(name.as_ref()) {
+            Some(AsyncDialogField::StringEnum { current, .. }) => current.as_deref(),
             _ => None,
         }
     }
@@ -110,6 +121,20 @@ impl AsyncDialog {
                         AsyncDialogField::Checkbox(b) => {
                             container(checkbox("", *b).on_toggle(on_update!(name, Checkbox)))
                         }
+                        AsyncDialogField::StringEnum { current, options } => container(pick_list(
+                            options.as_slice(),
+                            current.as_ref(),
+                            move |new| {
+                                Message::AsyncDialogUpdate(
+                                    self.key.clone(),
+                                    name.clone(),
+                                    AsyncDialogField::StringEnum {
+                                        current: Some(new),
+                                        options: options.clone(),
+                                    },
+                                )
+                            },
+                        )),
                     },
                 )
                 .into()
@@ -182,6 +207,30 @@ impl AsyncDialogBuilder {
     add_with!(with_number_default, Number, impl Into<i64>);
     add_with!(with_toggler_default, Toggle, bool);
     add_with!(with_checkbox_default, Checkbox, bool);
+
+    pub fn with_string_enum<S: Into<String>, I: IntoIterator<Item = String>>(
+        self,
+        name: S,
+        items: I,
+    ) -> Self {
+        self.with_string_enum_default(name, items, None)
+    }
+
+    pub fn with_string_enum_default<S: Into<String>, I: IntoIterator<Item = String>>(
+        mut self,
+        name: S,
+        items: I,
+        default: Option<String>,
+    ) -> Self {
+        self.inner.fields.0.insert(
+            name.into(),
+            AsyncDialogField::StringEnum {
+                current: default,
+                options: Vec::from_iter(items),
+            },
+        );
+        self
+    }
 }
 
 enum ProfilePane {
@@ -268,7 +317,11 @@ impl App {
                                 .on_press_with(|| Message::ProfileSelected(profile.name()))
                                 .into()
                         }))
-                        .push(sel_button!("Add Profile +").on_press(Message::ProfileAddPressed));
+                        .push(sel_button!("Add Profile +").on_press(Message::ProfileAddPressed))
+                        .push(
+                            sel_button!("Import Snapshot +")
+                                .on_press(Message::ProfileImportSnapshotRequested),
+                        );
                         container(select_col)
                     }
                     ProfilePane::ModList => {
