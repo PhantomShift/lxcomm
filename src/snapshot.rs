@@ -218,7 +218,10 @@ impl IncrementalSnapshotBuilder {
 
         let timestamp = chrono::Utc::now().timestamp();
         let ops = generate_ops_dir(&self.root, &working_dir.join(&rename))?;
-        let existing = File::open(&self.destination)?;
+        let existing = File::options()
+            .read(true)
+            .write(true)
+            .open(&self.destination)?;
         let mut archive = ZipWriter::new_append(existing)?;
         archive.start_file(timestamp.to_string(), *ZIP_OPTIONS)?;
         for op in ops {
