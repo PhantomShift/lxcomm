@@ -16,7 +16,7 @@ use std::{
 };
 
 use apply::Apply;
-use bevy_reflect::{GetField, Reflect, StructInfo, Type, TypeInfo, Typed};
+use bevy_reflect::{GetField, NamedField, Reflect, StructInfo, Type, TypeInfo, Typed};
 use bstr::{BString, ByteSlice};
 use derivative::Derivative;
 use etcetera::{AppStrategy, AppStrategyArgs};
@@ -33,9 +33,9 @@ use iced::{
     },
     widget::{
         self, Stack, button, checkbox, column, combo_box, container, horizontal_rule,
-        horizontal_space, image, markdown, opaque, pane_grid, progress_bar, rich_text, row,
-        scrollable, span, stack, text, text_editor, text_input, toggler, tooltip, vertical_rule,
-        vertical_space,
+        horizontal_space, image, markdown, opaque, pane_grid, pick_list, progress_bar, rich_text,
+        row, scrollable, span, stack, text, text_editor, text_input, toggler, tooltip,
+        vertical_rule, vertical_space,
     },
 };
 use iced_aw::{card, widget::LabeledFrame};
@@ -537,48 +537,133 @@ pub struct App {
     profile_pane_state: widgets::ProfilePaneState,
 }
 
-#[derive(Debug, Reflect, Clone, Copy)]
-struct AppSettingsUnsignedRange {
-    min: u32,
-    max: u32,
+#[derive(Debug, Reflect, Clone)]
+enum AppSettingEditor {
+    StringInput,
+    SecretInput,
+    NumberInput(std::ops::RangeInclusive<u32>),
+    BoolToggle,
+    StringPick(Vec<&'static str>),
 }
 
-impl Default for AppSettingsUnsignedRange {
-    fn default() -> Self {
-        Self {
-            min: u32::MIN,
-            max: u32::MAX,
+trait AppSettingsEditorTrait<T> {
+    fn render<'a, M>(
+        &'a self,
+        field: &'a NamedField,
+        name: &'static str,
+        current: &'a T,
+        can_edit: bool,
+        on_update: fn(&'static str, T) -> M,
+    ) -> Element<'a, Message>
+    where
+        M: Into<Message> + 'static;
+}
+
+impl AppSettingsEditorTrait<String> for AppSettingEditor {
+    fn render<'a, M>(
+        &'a self,
+        _field: &'a NamedField,
+        name: &'static str,
+        current: &'a String,
+        can_edit: bool,
+        on_update: fn(&'static str, String) -> M,
+    ) -> Element<'a, Message>
+    where
+        M: Into<Message> + 'static,
+    {
+        match self {
+            AppSettingEditor::SecretInput | AppSettingEditor::StringInput => {
+                let is_secret = matches!(self, AppSettingEditor::SecretInput);
+                text_input("", current)
+                    .secure(is_secret)
+                    .on_input_maybe(can_edit.then_some(move |new| on_update(name, new).into()))
+                    .into()
+            }
+            AppSettingEditor::StringPick(options) => {
+                pick_list(options.as_slice(), Some(current.as_str()), move |new| {
+                    on_update(name, new.to_owned()).into()
+                })
+                .width(Fill)
+                .into()
+            }
+            _ => panic!(
+                "String editor should only be used with StringInput, SecretInput or StringPick"
+            ),
         }
     }
 }
 
-#[derive(Debug, Reflect, Clone, Copy)]
-enum AppSettingEditor {
-    StringInput,
-    SecretInput,
-    NumberInput,
-    BoolToggle,
+impl AppSettingsEditorTrait<bool> for AppSettingEditor {
+    fn render<'a, M>(
+        &'a self,
+        _field: &'a NamedField,
+        name: &'static str,
+        current: &'a bool,
+        can_edit: bool,
+        on_update: fn(&'static str, bool) -> M,
+    ) -> Element<'a, Message>
+    where
+        M: Into<Message> + 'static,
+    {
+        match self {
+            AppSettingEditor::BoolToggle => container(widget::toggler(*current).on_toggle_maybe(
+                can_edit.then_some(move |toggled| on_update(name, toggled).into()),
+            ))
+            .center_y(Fill)
+            .into(),
+            _ => panic!("Bool edit should only be used with BoolToggle"),
+        }
+    }
+}
+
+impl AppSettingsEditorTrait<u32> for AppSettingEditor {
+    fn render<'a, M>(
+        &'a self,
+        field: &'a NamedField,
+        name: &'static str,
+        current: &'a u32,
+        can_edit: bool,
+        on_update: fn(&'static str, u32) -> M,
+    ) -> Element<'a, Message>
+    where
+        M: Into<Message> + 'static,
+    {
+        match self {
+            AppSettingEditor::NumberInput(range) => {
+                let editor = iced_aw::number_input(current, range.to_owned(), |_| Message::None)
+                    .on_input_maybe(can_edit.then_some(move |new| on_update(name, new).into()))
+                    .width(200);
+
+                if field.get_attribute::<AppSettingsTimePreview>().is_some() {
+                    let preview = humantime::format_duration(Duration::from_secs(*current as u64));
+                    row![text!("({preview}) ").height(Fill).center(), editor,].into()
+                } else {
+                    editor.into()
+                }
+            }
+            _ => panic!("Number edit should only be used with NumberInput"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum AppSettingEdit {
     String(&'static str, String),
-    Secret(&'static str, String),
     Number(&'static str, u32),
     Bool(&'static str, bool),
 }
 
 impl AppSettingEditor {
-    fn get_default_for(type_info: &'static TypeInfo) -> AppSettingEditor {
+    pub fn get_default_for(type_info: &'static TypeInfo) -> &'static AppSettingEditor {
         macro_rules! is_of {
             ($ty:ident,$type:ty) => {
                 $ty == Type::of::<$type>()
             };
         }
         match *type_info.ty() {
-            ty if is_of!(ty, String) => AppSettingEditor::StringInput,
-            ty if is_of!(ty, bool) => AppSettingEditor::BoolToggle,
-            ty if is_of!(ty, u32) => AppSettingEditor::NumberInput,
+            ty if is_of!(ty, String) => &AppSettingEditor::StringInput,
+            ty if is_of!(ty, bool) => &AppSettingEditor::BoolToggle,
+            ty if is_of!(ty, u32) => &AppSettingEditor::NumberInput(0..=u32::MAX),
             _ => {
                 unimplemented!(
                     "default editor is not specified for type {}",
@@ -587,6 +672,25 @@ impl AppSettingEditor {
             }
         }
     }
+}
+
+pub fn app_field_label(field: &NamedField) -> Option<Element<'_, Message>> {
+    let display = field.get_attribute::<AppSettingsLabel>()?;
+    let description = field.get_attribute::<AppSettingsDescription>();
+    Some(
+        tooltip(
+            row![text(display.0).align_y(Vertical::Center).height(Fill),]
+                .push(description.is_some().then_some(text("?").size(12))),
+            match description {
+                Some(description) => container(text(description.0))
+                    .style(container::rounded_box)
+                    .padding(16),
+                None => container(""),
+            },
+            tooltip::Position::Bottom,
+        )
+        .into(),
+    )
 }
 
 #[derive(Debug, Reflect)]
@@ -621,7 +725,7 @@ struct AppSettings {
     #[reflect(@AppSettingsDescription(r#"Maximum amount of retries when attempting to download an item.
 This is largely relevant for large mods where steamcmd will simply timeout the connection and stop the download,
 although this will also retry if any other errors occur. Set this to a higher value if you are finding that mods fail to download consistently."#))]
-    #[reflect(@AppSettingsUnsignedRange { min: 0, max: 20 })]
+    #[reflect(@AppSettingEditor::NumberInput(0..=20))]
     automatic_download_retries: u32,
 
     #[reflect(@AppSettingsLabel("Check Updates on Startup"))]
@@ -660,7 +764,7 @@ uncaching your login details and requiring that you log in again manually next t
     #[reflect(@AppSettingsDescription("If enabled, saves your Steam web API key to your secrets wallet to be used when opening the app again."))]
     steam_webapi_save_api_key: bool,
     #[reflect(@AppSettingsLabel("Steam Web API: Query Cache Lifetime (seconds)"))]
-    #[reflect(@AppSettingsUnsignedRange { min: 0, max: 604800 })]
+    #[reflect(@AppSettingEditor::NumberInput(0..=604800))]
     #[reflect(@AppSettingsTimePreview)]
     steam_webapi_cache_lifetime: u32,
     #[reflect(@AppSettingsLabel("Steam Web API: API Key"))]
@@ -668,6 +772,11 @@ uncaching your login details and requiring that you log in again manually next t
     #[serde(skip)]
     #[derivative(Debug = "ignore")]
     steam_webapi_api_key: String,
+
+    #[reflect(@AppSettingsLabel("Test Pick List"))]
+    #[reflect(@AppSettingEditor::StringPick(vec!["Basic", "Incremental"]))]
+    #[serde(skip)]
+    test_pick: String,
 }
 
 static APP_SETTINGS_INFO: LazyLock<&StructInfo> = LazyLock::new(|| {
@@ -695,6 +804,8 @@ impl Default for AppSettings {
             steam_webapi_save_api_key: false,
             steam_webapi_cache_lifetime: 86400,
             steam_webapi_api_key: Default::default(),
+
+            test_pick: "Basic".to_string(),
         }
     }
 }
@@ -2974,7 +3085,7 @@ impl App {
 
         match message {
             SettingsMessage::Edit(edit) => match edit {
-                AppSettingEdit::String(name, new) | AppSettingEdit::Secret(name, new) => {
+                AppSettingEdit::String(name, new) => {
                     apply!(name, String, new)
                 }
                 AppSettingEdit::Bool(name, new) => apply!(name, bool, new),
@@ -3429,28 +3540,13 @@ impl App {
         let col = column(APP_SETTINGS_INFO.iter().map(|field| {
             let name = field.name();
 
-            let display = field
-                .get_attribute::<AppSettingsLabel>()
-                .expect("label should be set");
-            let description = field.get_attribute::<AppSettingsDescription>();
-            let label = tooltip(
-                row![text(display.0).align_y(Vertical::Center).height(Fill),]
-                    .push(description.is_some().then_some(text("?").size(12))),
-                match description {
-                    Some(description) => container(text(description.0))
-                        .style(container::rounded_box)
-                        .padding(16),
-                    None => container(""),
-                },
-                tooltip::Position::Bottom,
-            )
-            .into();
+            let label = app_field_label(field);
+
             let can_edit = !(cfg!(feature = "flatpak")
                 && field.get_attribute::<AppSettingsFlatpakLocked>().is_some());
 
             let editor = match field
                 .get_attribute::<AppSettingEditor>()
-                .map(AppSettingEditor::to_owned)
                 .unwrap_or_else(|| {
                     AppSettingEditor::get_default_for(
                         field
@@ -3458,66 +3554,42 @@ impl App {
                             .expect("field should not be a dynamic type"),
                     )
                 }) {
-                AppSettingEditor::StringInput => text_input(
-                    AppSettings::default()
-                        .get_field::<String>(name)
-                        .expect("fields should have a default value"),
-                    settings
-                        .get_field::<String>(name)
-                        .expect("string input should only be set for string values"),
-                )
-                .width(600)
-                .on_input_maybe(can_edit.then_some(|new| AppSettingEdit::String(name, new).into()))
-                .into(),
-                AppSettingEditor::SecretInput => text_input(
-                    "unset",
-                    settings
-                        .get_field::<String>(name)
-                        .expect("secret input should only be set for string values"),
-                )
-                .secure(true)
-                .width(600)
-                .on_input_maybe(can_edit.then_some(|new| AppSettingEdit::Secret(name, new).into()))
-                .into(),
-                AppSettingEditor::BoolToggle => container(
-                    widget::toggler(
-                        *settings
-                            .get_field::<bool>(name)
-                            .expect("bool toggle should only be set for bool values"),
-                    )
-                    .on_toggle_maybe(
-                        can_edit.then_some(|toggled| AppSettingEdit::Bool(name, toggled).into()),
+                editor @ (AppSettingEditor::StringInput
+                | AppSettingEditor::SecretInput
+                | AppSettingEditor::StringPick(_)) => container(
+                    editor.render(
+                        field,
+                        name,
+                        settings
+                            .get_field(name)
+                            .expect("field should contain a string value"),
+                        can_edit,
+                        AppSettingEdit::String,
                     ),
                 )
-                .center_y(Fill)
+                .width(600)
                 .into(),
-                AppSettingEditor::NumberInput => {
-                    let value = settings
+                editor @ AppSettingEditor::BoolToggle => editor.render(
+                    field,
+                    name,
+                    settings
+                        .get_field::<bool>(name)
+                        .expect("field should contain a boolean"),
+                    can_edit,
+                    AppSettingEdit::Bool,
+                ),
+                editor @ AppSettingEditor::NumberInput(_) => editor.render(
+                    field,
+                    name,
+                    settings
                         .get_field::<u32>(name)
-                        .expect("number input should only be set for u32 values");
-                    let bounds = field
-                        .get_attribute::<AppSettingsUnsignedRange>()
-                        .cloned()
-                        .unwrap_or_default()
-                        .apply(|range| range.min..=range.max);
-
-                    let editor = iced_aw::number_input(value, bounds, |_| Message::None)
-                        .on_input_maybe(
-                            can_edit.then_some(|new| AppSettingEdit::Number(name, new).into()),
-                        )
-                        .width(200);
-
-                    if field.get_attribute::<AppSettingsTimePreview>().is_some() {
-                        let preview =
-                            humantime::format_duration(Duration::from_secs(*value as u64));
-                        row![text!("({preview}) ").height(Fill).center(), editor,].into()
-                    } else {
-                        editor.into()
-                    }
-                }
+                        .expect("field should be a u32"),
+                    can_edit,
+                    AppSettingEdit::Number,
+                ),
             };
 
-            row([label, horizontal_space().into(), editor])
+            row([label.into(), horizontal_space().into(), editor])
                 .height(32)
                 .into()
         }))
