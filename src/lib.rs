@@ -634,9 +634,14 @@ impl AppSettingsEditorTrait<u32> for AppSettingEditor {
                     .on_input_maybe(can_edit.then_some(move |new| on_update(name, new).into()))
                     .width(200);
 
-                if field.get_attribute::<AppSettingsTimePreview>().is_some() {
-                    let preview = humantime::format_duration(Duration::from_secs(*current as u64));
-                    row![text!("({preview}) ").height(Fill).center(), editor,].into()
+                if let Some(render_preview) = field.get_attribute::<AppSettingsNumberPreview>() {
+                    row![
+                        text!("{} ", render_preview.generate_preview(*current))
+                            .height(Fill)
+                            .center(),
+                        editor
+                    ]
+                    .into()
                 } else {
                     editor.into()
                 }
@@ -705,12 +710,26 @@ struct AppSettingsDepends(Vec<&'static str>);
 #[derive(Debug, Reflect)]
 struct AppSettingsConflicts(Vec<&'static str>);
 
-#[derive(Debug, Reflect)]
-struct AppSettingsTimePreview;
-
 /// Indicates that a setting cannot be changed in a flatpak context.
 #[derive(Debug, Reflect)]
 struct AppSettingsFlatpakLocked;
+
+#[derive(Debug, Reflect)]
+enum AppSettingsNumberPreview {
+    HumanTime,
+    FileSize,
+}
+
+impl AppSettingsNumberPreview {
+    fn generate_preview(&self, value: u32) -> String {
+        match self {
+            Self::HumanTime => {
+                humantime::format_duration(Duration::from_secs(value as u64)).to_string()
+            }
+            Self::FileSize => files::SizeDisplay::automatic(value as u64).to_string(),
+        }
+    }
+}
 
 #[derive(Derivative, Reflect, PartialEq, Serialize, Deserialize, Clone)]
 #[derivative(Debug)]
@@ -765,7 +784,7 @@ uncaching your login details and requiring that you log in again manually next t
     steam_webapi_save_api_key: bool,
     #[reflect(@AppSettingsLabel("Steam Web API: Query Cache Lifetime (seconds)"))]
     #[reflect(@AppSettingEditor::NumberInput(0..=604800))]
-    #[reflect(@AppSettingsTimePreview)]
+    #[reflect(@AppSettingsNumberPreview::HumanTime)]
     steam_webapi_cache_lifetime: u32,
     #[reflect(@AppSettingsLabel("Steam Web API: API Key"))]
     #[reflect(@AppSettingEditor::SecretInput)]
