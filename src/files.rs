@@ -610,3 +610,94 @@ pub fn gen_partial_hash(source: &Path, up_to: usize) -> std::io::Result<String> 
     let _ = buf_reader.read_exact(&mut buf);
     Ok(gen_hash(&buf))
 }
+
+/// Checks if two files have the filename and contents.
+pub fn file_exact_eq(a: &Path, b: &Path) -> std::io::Result<bool> {
+    if a.file_name() != b.file_name() {
+        return Ok(false);
+    }
+
+    let meta_a = a.metadata()?;
+    let meta_b = b.metadata()?;
+
+    if meta_a.len() != meta_b.len() {
+        return Ok(false);
+    }
+
+    if meta_a.is_file() != meta_b.is_file() {
+        return Ok(false);
+    }
+
+    let [hash_a, hash_b] = std::thread::scope(|s| {
+        let [a, b] = [a, b].map(|path| {
+            s.spawn(move || -> std::io::Result<blake3::Hash> {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update_reader(BufReader::new(std::fs::File::open(path)?))?;
+                Ok(hasher.finalize())
+            })
+        });
+        [
+            a.join().expect("thread should not panic"),
+            b.join().expect("thread should not panic"),
+        ]
+    });
+
+    Ok(hash_a? == hash_b?)
+}
+
+pub fn dir_exact_eq(a: &Path, b: &Path) -> std::io::Result<bool> {
+    macro_rules! ensure {
+        ($expression:expr) => {
+            if !($expression) {
+                return Ok(false);
+            }
+        };
+    }
+
+    let a = a.canonicalize()?;
+    let b = b.canonicalize()?;
+
+    // Theoretically if file structures are identical then walks
+    // should have identical paths.
+    let mut walk_a = walkdir::WalkDir::new(&a)
+        .sort_by_file_name()
+        .into_iter()
+        // Skip checking name of root directory.
+        .skip(1);
+    let mut walk_b = walkdir::WalkDir::new(&b)
+        .sort_by_file_name()
+        .into_iter()
+        .skip(1);
+
+    for (entry_a, entry_b) in walk_a.by_ref().zip(walk_b.by_ref()) {
+        let entry_a = entry_a?;
+        let entry_b = entry_b?;
+
+        ensure!(entry_a.depth() == entry_b.depth());
+        ensure!(entry_a.file_name() == entry_b.file_name());
+
+        let rel_a = entry_a
+            .path()
+            .strip_prefix(&a)
+            .expect("subpath should be prefixed with its root");
+        let rel_b = entry_b
+            .path()
+            .strip_prefix(&b)
+            .expect("subpath should be prefixed with its root");
+        ensure!(rel_a == rel_b);
+
+        match (entry_a.metadata()?.is_file(), entry_b.metadata()?.is_file()) {
+            (true, true) if file_exact_eq(entry_a.path(), entry_b.path())? => (),
+            (false, false) => (),
+            _ => {
+                dbg!(entry_a.path());
+                dbg!(entry_b.path());
+                return Ok(false);
+            }
+        }
+    }
+
+    ensure!(walk_a.next().is_none() && walk_b.next().is_none());
+
+    Ok(true)
+}

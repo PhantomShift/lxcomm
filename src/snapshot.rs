@@ -289,8 +289,11 @@ mod incremental {
     pub(super) const BYTES_START: &str = "I_LXBS__";
     pub(super) const BYTES_END: &str = "I_LXBE__";
 
+    pub(super) const MARK_DIR: &str = "I_LXMD__";
+
     // General "grammar" for reading/writing encoded ops
     // DELETE_START ~ PATH_START ~ .+ ~ PATH_END
+    // CREATE_START ~ PATH_START ~ .+ ~ PATH_END ~ MARK_DIR
     // CREATE_START ~ PATH_START ~ .+ ~ PATH_END ~ BYTES_START ~ .* ~ BYTES_END
     // MODIFY_START ~ PATH_START ~ .+ ~ PATH_END ~ ":" ~ (0-padded u64) ~ "," ~ (0-padded u64) ":" ~ (0-padded u64) ~ "," ~ (0-padded u64) ~ ":" ~ BYTES_START ~ .* ~ BYTES_END
     // Operations should always be separated by one newline
@@ -302,6 +305,7 @@ const U64_WIDTH: usize = 20;
 #[derive(Debug, PartialEq)]
 enum SnapshotOp {
     Delete(String),
+    CreateDir(String),
     Create(String, Vec<u8>),
     Modify(String, Range<u64>, Range<u64>, Vec<u8>),
 }
@@ -309,9 +313,10 @@ enum SnapshotOp {
 impl SnapshotOp {
     fn get_name(&self) -> &str {
         match self {
-            SnapshotOp::Delete(s) | SnapshotOp::Create(s, _) | SnapshotOp::Modify(s, _, _, _) => {
-                s.as_str()
-            }
+            Self::Delete(s)
+            | Self::CreateDir(s)
+            | Self::Create(s, _)
+            | Self::Modify(s, _, _, _) => s.as_str(),
         }
     }
 }
@@ -365,9 +370,6 @@ fn generate_ops_dir(source: &Path, new: &Path) -> std::io::Result<Vec<SnapshotOp
 
     for source_entry in walkdir::WalkDir::new(source).contents_first(true) {
         let source_entry = source_entry?;
-        if source_entry.file_type().is_dir() {
-            continue;
-        }
 
         let abs = source_entry.path();
         let rel = abs
@@ -378,13 +380,30 @@ fn generate_ops_dir(source: &Path, new: &Path) -> std::io::Result<Vec<SnapshotOp
 
         let new_path = new.join(&rel);
         if new_path.try_exists()? {
-            let source_contents = std::fs::read(abs)?;
-            let new_contents = std::fs::read(&new_path)?;
-            ops.append(&mut generate_ops(
-                rel,
-                Some(&source_contents),
-                Some(&new_contents),
-            ));
+            match (
+                source_entry.metadata()?.is_file(),
+                new_path.metadata()?.is_file(),
+            ) {
+                (true, true) => {
+                    let source_contents = std::fs::read(abs)?;
+                    let new_contents = std::fs::read(&new_path)?;
+                    ops.extend(generate_ops(
+                        rel,
+                        Some(&source_contents),
+                        Some(&new_contents),
+                    ));
+                }
+                (true, false) => {
+                    ops.push(SnapshotOp::Delete(rel.clone()));
+                    ops.push(SnapshotOp::CreateDir(rel));
+                }
+                (false, true) => {
+                    let new_contents = std::fs::read(&new_path)?;
+                    ops.push(SnapshotOp::Delete(rel.clone()));
+                    ops.push(SnapshotOp::Create(rel, new_contents));
+                }
+                (false, false) => (),
+            }
         } else {
             ops.push(SnapshotOp::Delete(rel));
         }
@@ -392,9 +411,6 @@ fn generate_ops_dir(source: &Path, new: &Path) -> std::io::Result<Vec<SnapshotOp
 
     for new_entry in walkdir::WalkDir::new(new).contents_first(true) {
         let new_entry = new_entry?;
-        if new_entry.file_type().is_dir() {
-            continue;
-        }
 
         let abs = new_entry.path();
         let rel = abs
@@ -405,8 +421,12 @@ fn generate_ops_dir(source: &Path, new: &Path) -> std::io::Result<Vec<SnapshotOp
 
         let source_path = source.join(&rel);
         if !source_path.try_exists()? {
-            let contents = std::fs::read(abs)?;
-            ops.push(SnapshotOp::Create(rel, contents))
+            if new_entry.file_type().is_file() {
+                let contents = std::fs::read(abs)?;
+                ops.push(SnapshotOp::Create(rel, contents));
+            } else {
+                ops.push(SnapshotOp::CreateDir(rel));
+            }
         }
     }
 
@@ -422,6 +442,12 @@ where
     match op {
         SnapshotOp::Delete(path) => {
             writeln!(writer, "{DELETE_START}{PATH_START}{path}{PATH_END}")?;
+        }
+        SnapshotOp::CreateDir(path) => {
+            writeln!(
+                writer,
+                "{CREATE_START}{PATH_START}{path}{PATH_END}{MARK_DIR}"
+            )?;
         }
         SnapshotOp::Create(path, contents) => {
             write!(
@@ -491,7 +517,7 @@ where
 
     let mut method_start = [0; DELETE_START.len()];
     let mut path_marker = [0; PATH_START.len()];
-    let mut bytes_marker = [0; BYTES_START.len()];
+    let mut create_marker = [0; BYTES_START.len()];
     let mut u64_holder = [0; U64_WIDTH];
     let mut scratch = Vec::with_capacity(1024);
 
@@ -536,13 +562,26 @@ where
             }
             CREATE_START => {
                 let path = get_path!();
-                match_exact!(bytes_marker, BYTES_START, "expected bytes start marker");
-                read_until_match(&mut scratch, &mut reader, BYTES_END.as_bytes())?;
 
-                ops.push(SnapshotOp::Create(
-                    path,
-                    Vec::from_iter(scratch.drain(..scratch.len() - BYTES_END.len())),
-                ));
+                reader.read_exact(&mut create_marker)?;
+                match create_marker.try_as_str()? {
+                    MARK_DIR => ops.push(SnapshotOp::CreateDir(path)),
+                    BYTES_START => {
+                        read_until_match(&mut scratch, &mut reader, BYTES_END.as_bytes())?;
+                        ops.push(SnapshotOp::Create(
+                            path,
+                            Vec::from_iter(scratch.drain(..scratch.len() - BYTES_END.len())),
+                        ));
+                    }
+                    bytes => {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            format!(
+                                "expected one of {MARK_DIR} or {BYTES_START}, received {bytes}"
+                            ),
+                        ));
+                    }
+                }
             }
             MODIFY_START => {
                 let path = get_path!();
@@ -561,7 +600,7 @@ where
                 let new_end: u64 = u64_holder.try_parse_as_str()?;
                 match_exact!(b':');
 
-                match_exact!(bytes_marker, BYTES_START, "expected bytes start marker");
+                match_exact!(create_marker, BYTES_START, "expected bytes start marker");
                 read_until_match(&mut scratch, &mut reader, BYTES_END.as_bytes())?;
 
                 ops.push(SnapshotOp::Modify(
@@ -625,8 +664,15 @@ fn apply_ops(root: &Path, ops: &[SnapshotOp], cache: &mut WorkingCache) -> std::
         for op in grouped_op {
             match op {
                 SnapshotOp::Delete(_) => {
-                    std::fs::remove_file(&file_path)?;
+                    if file_path.metadata()?.is_file() {
+                        std::fs::remove_file(&file_path)?;
+                    } else {
+                        std::fs::remove_dir_all(&file_path)?;
+                    }
                     cache.remove(name);
+                }
+                SnapshotOp::CreateDir(path) => {
+                    std::fs::create_dir(root.join(path))?;
                 }
                 SnapshotOp::Create(_, contents) => {
                     cache.insert(name.to_owned(), contents.to_owned());
@@ -654,17 +700,6 @@ fn apply_ops(root: &Path, ops: &[SnapshotOp], cache: &mut WorkingCache) -> std::
 
     for name in modified {
         std::fs::write(root.join(name), &cache[name])?;
-    }
-
-    for entry in walkdir::WalkDir::new(&root)
-        .contents_first(true)
-        .into_iter()
-        .filter_entry(|e| e.file_type().is_dir())
-    {
-        let entry = entry?;
-        if std::fs::read_dir(entry.path())?.count() == 0 {
-            std::fs::remove_dir_all(entry.path())?;
-        }
     }
 
     Ok(())
@@ -703,6 +738,7 @@ fn incr_ops_modify() -> eyre::Result<()> {
     for op in decoded_ops {
         match op {
             SnapshotOp::Delete(name) => println!("Would delete {name}"),
+            SnapshotOp::CreateDir(name) => println!("Would create directory {name}"),
             SnapshotOp::Create(name, contents) => {
                 println!("Would create {name} with contents {}", contents.as_bstr())
             }
@@ -728,48 +764,6 @@ fn incr_ops_modify() -> eyre::Result<()> {
 
 #[test]
 fn incr_ops_basic() -> eyre::Result<()> {
-    fn gen_hash_full(path: &Path) -> std::io::Result<blake3::Hash> {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update_reader(std::fs::File::open(path)?)?;
-        Ok(hasher.finalize())
-    }
-
-    fn compare_dirs(a: &Path, b: &Path) -> std::io::Result<bool> {
-        let mut checked = HashSet::new();
-        for entry in walkdir::WalkDir::new(a) {
-            let entry = entry?;
-            let path_a = entry.path();
-            let rel = path_a
-                .strip_prefix(a)
-                .expect("base should be a valid prefix");
-            let path_b = b.join(rel);
-
-            if !path_b.try_exists()?
-                || (path_a.is_file() != path_b.is_file())
-                || (path_a.is_file()
-                    && path_b.is_file()
-                    && (gen_hash_full(path_a)? != gen_hash_full(&path_b)?))
-            {
-                return Ok(false);
-            }
-
-            checked.insert(rel.to_path_buf());
-        }
-
-        for entry in walkdir::WalkDir::new(b) {
-            let entry = entry?;
-            let path_b = entry.path();
-            let rel = path_b
-                .strip_prefix(b)
-                .expect("base should be a valid prefix");
-            if !checked.contains(rel) {
-                return Ok(false);
-            }
-        }
-
-        Ok(true)
-    }
-
     let working_directory = CACHE_DIR.join("LXCOMM_TEST_INCREMENTAL");
     if working_directory.try_exists()? {
         std::fs::remove_dir_all(&working_directory)?;
@@ -805,11 +799,11 @@ fn incr_ops_basic() -> eyre::Result<()> {
     let mut work_cache = WorkingCache::new();
     let revision_ops = decode_ops(&mut std::io::Cursor::new(&revision_encoded))?;
     apply_ops(&work_dir, &revision_ops, &mut work_cache)?;
-    assert!(compare_dirs(&work_dir, &revision_dir)?);
+    assert!(files::dir_exact_eq(&work_dir, &revision_dir)?);
 
     let final_ops = decode_ops(&mut std::io::Cursor::new(&final_encoded))?;
     apply_ops(&work_dir, &final_ops, &mut work_cache)?;
-    assert!(compare_dirs(&work_dir, &final_dir)?);
+    assert!(files::dir_exact_eq(&work_dir, &final_dir)?);
 
     Ok(())
 }
