@@ -848,15 +848,6 @@ impl App {
         let steam_web_api_entry = keyring::Entry::new("lxcomm-steam", "steam-web-api")?;
         let steam_password_entry = keyring::Entry::new("lxcomm-steam", "steam-password")?;
 
-        let mut settings = if let Ok(true) = SETTINGS_PATH.try_exists()
-            && let Ok(file) = std::fs::File::open(&*SETTINGS_PATH)
-            && let Ok(settings) = serde_json::from_reader(file)
-        {
-            settings
-        } else {
-            AppSettings::default()
-        };
-
         fn load_data<T: Default + DeserializeOwned>(
             source: &Path,
             name: &'static str,
