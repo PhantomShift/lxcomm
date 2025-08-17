@@ -1095,6 +1095,10 @@ impl App {
                 }))
             };
 
+        // Additional startup tasks
+        app.trim_snapshots();
+        app.trim_image_cache();
+
         // Potential TODO: turn this into an asynchronous task to prevent UI lockup on extremely large libraries
         app.scan_downloads();
         for path in app.save.local_mod_dirs.clone() {
@@ -4723,6 +4727,120 @@ impl App {
         } else {
             Task::none()
         }
+    }
+
+    fn trim_snapshots(&self) {
+        for (profile_name, profile) in self.profiles.iter() {
+            // TODO: Implement incremental snapshot rebasing, *for now* size is unbounded for incremental snapshots
+            if profile.settings.automatic_snapshot_strategy
+                == library::snapshot_strategy::INCREMENTAL
+            {
+                continue;
+            }
+
+            if profile.settings.automatic_snapshot_number_limit == 0
+                && profile.settings.automatic_snapshot_size_limit == 0
+            {
+                continue;
+            }
+
+            let profile_name = profile_name.to_owned();
+            let number_limit = profile
+                .settings
+                .automatic_snapshot_number_limit
+                .apply(|n| if n == 0 { usize::MAX } else { n as usize });
+            let size_limit = profile
+                .settings
+                .automatic_snapshot_size_limit
+                .apply(|n| if n == 0 { u64::MAX } else { n as u64 });
+            std::thread::spawn(move || {
+                let result: std::io::Result<()> = try {
+                    let mut paths = Vec::with_capacity(number_limit + 1);
+                    let mut sizes = Vec::with_capacity(paths.capacity());
+                    for entry in std::fs::read_dir(snapshot::AUTOMATIC_SNAPSHOTS_DIR.as_path())? {
+                        let entry = entry?;
+                        let path = entry.path();
+                        let Some(name) = path
+                            .file_name()
+                            .expect("path should not end with ..")
+                            .to_str()
+                        else {
+                            // Any automatic snapshots created specifically by LXCOMM should be valid UTF-8
+                            continue;
+                        };
+                        let Some((prefix, suffix)) = name.split_once(&profile_name) else {
+                            continue;
+                        };
+                        if prefix != "LXCOMM_AUTO_BASIC_"
+                            || chrono::NaiveDateTime::parse_from_str(
+                                suffix,
+                                "_%Y.%m.%d_%Hh%Mm%Ss.zip",
+                            )
+                            .is_err()
+                        {
+                            continue;
+                        }
+                        let metadata = entry.metadata()?;
+                        paths.push(path);
+                        sizes.push(metadata.len());
+                    }
+                    let mut current_size = sizes.iter().sum::<u64>();
+                    let mut indices = Vec::from_iter(0..paths.len());
+                    indices.reverse();
+                    while (current_size > size_limit || indices.len() > number_limit)
+                        && let Some(i) = indices.pop()
+                    {
+                        std::fs::remove_file(&paths[i])?;
+                        current_size -= sizes[i];
+                    }
+                };
+                if let Err(err) = result {
+                    eprintln!("Error trimming snapshots: {err:?}");
+                }
+            });
+        }
+    }
+
+    fn trim_image_cache(&self) {
+        // TODO: Make limit customizable
+        const SIZE_LIMIT: u64 = files::GIGA;
+        std::thread::spawn(|| -> std::io::Result<()> {
+            struct ImageInfo {
+                path: PathBuf,
+                size: u64,
+                accessed: std::time::SystemTime,
+            }
+            let mut images = Vec::new();
+            let mut current_size = 0;
+            for entry in std::fs::read_dir(web::IMAGE_DIR.as_path())? {
+                let entry = entry?;
+                let metadata = entry.metadata()?;
+                if !metadata.is_file() {
+                    continue;
+                }
+                current_size += metadata.len();
+                images.push(ImageInfo {
+                    path: entry.path(),
+                    size: metadata.len(),
+                    accessed: metadata.accessed()?,
+                });
+            }
+            if current_size < SIZE_LIMIT {
+                return Ok(());
+            }
+
+            images.sort_by(|a, b| a.accessed.cmp(&b.accessed));
+
+            for ImageInfo { path, size, .. } in images {
+                if current_size < SIZE_LIMIT {
+                    break;
+                }
+                std::fs::remove_file(path)?;
+                current_size -= size;
+            }
+
+            Ok(())
+        });
     }
 }
 
