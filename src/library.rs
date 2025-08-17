@@ -1,13 +1,29 @@
-use std::{collections::BTreeMap, path::PathBuf, sync::LazyLock};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::LazyLock,
+};
 
 use apply::Apply;
+use bevy_reflect::{GetField, Reflect, Typed};
 use fuse_rust::Fuse;
+use iced::{
+    Task,
+    widget::{column, container, horizontal_rule, rich_text, scrollable, span, text},
+};
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    files::{Cache, ModDetails},
+    AppSettingEdit, AppSettingEditor, AppSettingsDescription, AppSettingsEditorTrait,
+    AppSettingsLabel, AppSettingsNumberPreview, Message, PROFILES_DIR,
+    extensions::Truncatable,
+    files::{self, Cache, ModDetails},
+    snapshot,
     xcom_mod::{self, ModId},
 };
+
+pub const PROFILE_DATA_NAME: &str = "data.json";
 
 static DEFAULT_FUZZY_MATCHER: LazyLock<Fuse> = LazyLock::new(|| Fuse {
     // Potential TODO - Adjust this threshold
@@ -168,13 +184,41 @@ impl Library {
 
         self.missing_dependencies = all_missing;
     }
+
+    pub fn get_provider(&self, dlc_name: &str, cache: &Cache) -> Option<&ModId> {
+        self.compatibility
+            .iter()
+            .find(|(id, compatibility)| {
+                cache
+                    .get_mod_metadata(id)
+                    .is_some_and(|data| data.dlc_name == dlc_name)
+                    || compatibility.ignore_required.contains(dlc_name)
+            })
+            .map(|(id, _)| id)
+    }
+
+    pub fn get_all_providers(&self, dlc_name: &str, cache: &Cache) -> Vec<&ModId> {
+        self.compatibility
+            .iter()
+            .filter(|(id, compatibility)| {
+                cache
+                    .get_mod_metadata(id)
+                    .is_some_and(|data| data.dlc_name == dlc_name)
+                    || compatibility.ignore_required.contains(dlc_name)
+            })
+            .map(|(id, _)| id)
+            .collect()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Profile {
-    pub id: usize,
     pub name: String,
     pub items: BTreeMap<ModId, LibraryItemSettings>,
+    #[serde(default)]
+    pub settings: ProfileSettings,
+    #[serde(skip)]
+    pub settings_editing: ProfileSettings,
 
     #[serde(skip)]
     pub compatibility_issues: BTreeMap<ModId, Vec<CompatibilityIssue>>,
@@ -186,13 +230,13 @@ pub struct Profile {
 
 impl PartialEq for Profile {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+        self.name == other.name
     }
 }
 
 impl PartialOrd for Profile {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.id.partial_cmp(&other.id)
+        self.name.partial_cmp(&other.name)
     }
 }
 
@@ -309,6 +353,340 @@ impl Profile {
 
         self.compatibility_issues = all;
     }
+
+    pub fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    pub fn load_state(root: &Path, name: &str) -> std::io::Result<Profile> {
+        let profile_path = root.join(name).join(PROFILE_DATA_NAME);
+        let read = std::fs::read_to_string(profile_path)?;
+        let profile: Profile = serde_json::from_str(&read)?;
+
+        Ok(profile)
+    }
+
+    pub fn save_into(&self, file: std::fs::File) -> std::io::Result<()> {
+        Ok(serde_json::to_writer_pretty(file, self)?)
+    }
+
+    pub fn save_state_in(&self, root: &Path) -> std::io::Result<()> {
+        let path = root.join(&self.name).join(PROFILE_DATA_NAME);
+        let file = std::fs::File::create(path)?;
+        self.save_into(file)
+    }
+
+    pub fn view_details(&self, library: &Library, cache: &Cache) -> iced::Element<'_, Message> {
+        let name = &self.name;
+        let location = PROFILES_DIR.join(name);
+        let loc_disp = location.display();
+        let total_mods = self.items.len();
+
+        let location_text = rich_text([
+            span("Location: "),
+            span(loc_disp.to_string()).link(location),
+        ])
+        .on_link_click(|path: PathBuf| {
+            let _ = opener::open(path);
+            Message::None
+        });
+
+        let get_title = |id: &ModId| {
+            library
+                .items
+                .get(id)
+                .map(|item| item.title.as_str())
+                .unwrap_or("UNKNOWN")
+        };
+
+        container(
+            column!()
+                .push(text!("Name: {name}"))
+                .push(location_text)
+                .push(text!("Total Mods: {total_mods}"))
+                .push(horizontal_rule(2))
+                .push(text("Settings").size(24))
+                .push(self.display_settings())
+                .push(horizontal_rule(2))
+                .push((!self.compatibility_issues.is_empty()).then_some(text("Problems").size(24)))
+                .push(column(self.compatibility_issues.iter().map(
+                    |(id, issues)| {
+                        let details = cache.get_details(id);
+                        let title = details.as_ref().map(ModDetails::title).unwrap_or("UNKNOWN");
+                        column!(text!("Issues with {title} ({id})").size(20))
+                            .extend(issues.iter().map(|issue| match issue {
+                                CompatibilityIssue::Incompatible(dlc_name) => {
+                                    let provider_text = if let Some(provider) =
+                                        library.get_provider(dlc_name, cache)
+                                    {
+                                        format!(
+                                            " (Provided by {} | {provider})",
+                                            get_title(provider)
+                                        )
+                                    } else {
+                                        String::new()
+                                    };
+
+                                    text!(
+                                        "Mod is incompatible with DLCName {dlc_name}{provider_text}"
+                                    )
+                                    .into()
+                                }
+                                CompatibilityIssue::MissingRequired(dlc_name) => {
+                                    let candidate_text = library
+                                        .get_all_providers(dlc_name, cache)
+                                        .into_iter()
+                                        .map(|id| {
+                                            format!(
+                                                "{} ({})",
+                                                get_title(id),
+                                                id.to_string().truncated_overflow(12)
+                                            )
+                                        })
+                                        .join(", ");
+                                    let candidate_text = if candidate_text.is_empty() {
+                                        candidate_text
+                                    } else {
+                                        format!(" - Downloaded mods that provide {dlc_name}: {candidate_text}")
+                                    };
+
+                                    text!("Mod depends on DLCName {dlc_name} which is not currently in the profile{candidate_text}").into()
+                                }
+                                // Potential TODO - provide a way to override this issue
+                                CompatibilityIssue::MissingWorkshop(_id, name) => {
+                                    text!("{name} is listed as a dependency by the Workshop page (potentially ignorable)").into()
+                                }
+                                CompatibilityIssue::Overlapping(name, provided) => {
+                                    text!("{name} provides the same DLCNames as {title}: {}", provided.iter().join(", ")).into()
+                                }
+                                CompatibilityIssue::Unknown => {
+                                    text!("This Workshop mod is missing its information").into()
+                                }
+                            })).spacing(4)
+                            .into()
+                    },
+                )))
+                .spacing(8),
+        )
+        .padding(16)
+        .apply(scrollable)
+        .into()
+    }
+
+    pub fn generate_automatic_snapshot(&self) -> impl Future<Output = std::io::Result<()>> + use<> {
+        let now = chrono::Utc::now();
+        let profile_name = self.name();
+        let strategy =
+            snapshot::SnapshotType::from(self.settings.automatic_snapshot_strategy.as_str());
+
+        async move {
+            match strategy {
+                snapshot::SnapshotType::Basic => {
+                    let backup_name = format!(
+                        "LXCOMM_AUTO_BASIC_{profile_name}_{}.zip",
+                        now.format("%Y.%m.%d_%Hh%Mm%Ss")
+                    );
+                    let backup_path = snapshot::AUTOMATIC_SNAPSHOTS_DIR.join(backup_name);
+                    snapshot::BasicSnapshotBuilder::new(
+                        PROFILES_DIR.join(&profile_name),
+                        backup_path,
+                    )
+                    .comment(format!(
+                        "Snapshot automatically generated at {}",
+                        now.format("%c")
+                    ))
+                    .finalize()?;
+                }
+                snapshot::SnapshotType::Incremental => {
+                    let backup_name = format!("LXCOMM_AUTO_INCR_{profile_name}.zip");
+                    let backup_path = snapshot::AUTOMATIC_SNAPSHOTS_DIR.join(backup_name);
+                    snapshot::IncrementalSnapshotBuilder::new(
+                        PROFILES_DIR.join(&profile_name),
+                        backup_path,
+                    )
+                    .comment(format!(
+                        "Snapshot automatically updated at {}",
+                        now.format("%c")
+                    ))
+                    .finalize()?;
+                }
+                snapshot::SnapshotType::Invalid => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "invalid snapshot type",
+                    ));
+                }
+            }
+
+            Ok(())
+        }
+    }
+
+    pub fn handle_settings_update(
+        &mut self,
+        message: ProfileSettingsMessage,
+    ) -> iced::Task<Message> {
+        macro_rules! apply {
+            ($name:ident,$ty:ty,$val:expr) => {
+                *self
+                    .settings_editing
+                    .get_field_mut::<$ty>($name)
+                    .expect(&format!(
+                        "setting {} should be a {}",
+                        $name,
+                        stringify!($ty)
+                    )) = $val
+            };
+        }
+
+        match message {
+            ProfileSettingsMessage::Edit(edit) => match edit {
+                AppSettingEdit::String(name, new) => {
+                    apply!(name, String, new)
+                }
+                AppSettingEdit::Bool(name, new) => apply!(name, bool, new),
+                AppSettingEdit::Number(name, new) => apply!(name, u32, new),
+            },
+            ProfileSettingsMessage::ResetToDefault => {
+                self.settings_editing = ProfileSettings::default()
+            }
+            ProfileSettingsMessage::ResetToSaved => self.settings_editing = self.settings.clone(),
+            ProfileSettingsMessage::Save => {
+                if self.settings_editing != self.settings {
+                    self.settings = self.settings_editing.clone();
+                    if let Err(err) = self.save_state_in(&PROFILES_DIR) {
+                        let err =
+                            eyre::Error::new(err).wrap_err("Failed to save profile setttings.");
+                        return Task::done(Message::display_error(
+                            "Error Saving",
+                            format!("{err:?}"),
+                        ));
+                    }
+                }
+            }
+            ProfileSettingsMessage::None => (),
+        }
+
+        iced::Task::none()
+    }
+
+    pub fn emit_settings_message(&self, message: ProfileSettingsMessage) -> Message {
+        Message::ProfileSettings(self.name(), message)
+    }
+
+    pub fn display_settings(&self) -> iced::Element<'_, Message> {
+        use iced::widget::*;
+
+        let settings = &self.settings_editing;
+
+        column(PROFILE_SETTINGS_INFO.iter().map(|field| {
+            let name = field.name();
+            let label = crate::app_field_label(field);
+
+            let editor = match field
+                .get_attribute::<AppSettingEditor>()
+                .unwrap_or_else(|| {
+                    AppSettingEditor::get_default_for(
+                        field
+                            .type_info()
+                            .expect("field should not be a dynamic type"),
+                    )
+                }) {
+                editor @ (AppSettingEditor::StringInput
+                | AppSettingEditor::SecretInput
+                | AppSettingEditor::StringPick(_)) => container(
+                    editor.render(
+                        field,
+                        name,
+                        settings
+                            .get_field(name)
+                            .expect("field should contain a string value"),
+                        true,
+                        |name, value| {
+                            self.emit_settings_message(ProfileSettingsMessage::Edit(
+                                AppSettingEdit::String(name, value),
+                            ))
+                        },
+                    ),
+                )
+                .into(),
+                editor @ AppSettingEditor::BoolToggle => editor.render(
+                    field,
+                    name,
+                    settings.get_field(name).expect("field should be a boolean"),
+                    true,
+                    |name, value| {
+                        self.emit_settings_message(ProfileSettingsMessage::Edit(
+                            AppSettingEdit::Bool(name, value),
+                        ))
+                    },
+                ),
+                editor @ AppSettingEditor::NumberInput(_) => editor.render(
+                    field,
+                    name,
+                    settings.get_field(name).expect("field should be a u32"),
+                    true,
+                    |name, value| {
+                        self.emit_settings_message(ProfileSettingsMessage::Edit(
+                            AppSettingEdit::Number(name, value),
+                        ))
+                    },
+                ),
+            };
+
+            row![label, horizontal_space(), editor].height(32).into()
+        }))
+        .push(row![
+            iced::widget::horizontal_space(),
+            button("Reset to Default").on_press_with(
+                || self.emit_settings_message(ProfileSettingsMessage::ResetToDefault)
+            ),
+            button("Reset to Saved")
+                .on_press_with(|| self.emit_settings_message(ProfileSettingsMessage::ResetToSaved)),
+            button("Save").on_press_maybe(
+                (self.settings != self.settings_editing)
+                    .then_some(self.emit_settings_message(ProfileSettingsMessage::Save))
+            ),
+        ])
+        .height(iced::Length::Shrink)
+        .into()
+    }
+}
+
+// Based on https://superuser.com/a/748264
+static DISALLOWED_CHARS: &[char] = &['.', '/', '\\', ':', ';', '*', '?', '"', '<', '>', '|', '\0'];
+const FILENAME_MAX_LEN: usize = 255;
+pub fn validate_profile_name(name: &str) -> Result<(), String> {
+    static DISALLOWED_DISPLAY: LazyLock<String> =
+        LazyLock::new(|| String::from_iter(DISALLOWED_CHARS));
+
+    if name.is_empty() {
+        return Err("Submitted name is empty.".to_owned());
+    }
+    if name.chars().count() > FILENAME_MAX_LEN {
+        return Err(format!(
+            "Profile name cannot be longer than {FILENAME_MAX_LEN} characters."
+        ));
+    }
+    for ch in name.chars() {
+        if DISALLOWED_CHARS.contains(&ch) {
+            return Err(format!(
+                "Profile name cannot contain any of the following characters: '{}'",
+                *DISALLOWED_DISPLAY,
+            ));
+        }
+        if ch.is_ascii_control() {
+            return Err("Profile name cannot contain control characters.".to_owned());
+        }
+    }
+
+    Ok(())
+}
+
+pub fn sanitize_profile_name(name: &str) -> String {
+    name.truncated(FILENAME_MAX_LEN)
+        .replace(DISALLOWED_CHARS, "_")
+        .replace(|ch: char| ch.is_ascii_control(), "_")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -332,4 +710,65 @@ pub mod profile_folder {
     pub const SAVE_DATA: &str = "SaveData";
 
     pub const ALL: [&str; 4] = [CHARACTER_POOL, CONFIG, PHOTOBOOTH, SAVE_DATA];
+}
+
+pub mod snapshot_strategy {
+    pub const BASIC: &str = "Basic";
+    pub const INCREMENTAL: &str = "Incremental";
+
+    pub const ALL: [&str; 2] = [BASIC, INCREMENTAL];
+}
+
+#[derive(Debug, Reflect, PartialEq, Serialize, Deserialize, Clone)]
+pub struct ProfileSettings {
+    #[reflect(@AppSettingsLabel("Automatic Snapshot Strategy"))]
+    #[reflect(@AppSettingsDescription(indoc::indoc!{ "Strategy to use when automatically creating snapshots.
+    Basic (Recommended) - Creates a fresh Zstandard-compressed ZIP archive of the entire profile's directory.
+    Incremental (Experimental) - Creates a combined Zstandard-compressed archive containing a copy of the profile at the time the snapshot is first automatically created and delta-based snapshots following.
+    Note that breaking changes to incremental snapshots might be introduced between versions while the feature is marked as experimental. Such breakages will be announced at best effort." }))]
+    #[reflect(@AppSettingEditor::StringPick(snapshot_strategy::ALL.to_vec()))]
+    pub automatic_snapshot_strategy: String,
+    #[reflect(@AppSettingsLabel("Automatic Snapshot: Number Limit"))]
+    #[reflect(@AppSettingsDescription("Number of automatic snapshots to keep. Set to 0 to disable. Ignored for incremental snapshots."))]
+    pub automatic_snapshot_number_limit: u32,
+    #[reflect(@AppSettingsLabel("Automatic Snapshot: Size Limit"))]
+    #[reflect(@AppSettingsDescription("Total allowed (compressed) size of automatic snapshots. Set to 0 to disable."))]
+    #[reflect(@AppSettingsNumberPreview::FileSize)]
+    pub automatic_snapshot_size_limit: u32,
+
+    #[reflect(@AppSettingsLabel("Automatic Snapshot: Create on Apply"))]
+    #[reflect(@AppSettingsDescription("Automatically create snapshots when applying profile."))]
+    pub automatic_snapshot_on_apply: bool,
+    #[reflect(@AppSettingsLabel("Automatic Snapshot: Create on Launch"))]
+    #[reflect(@AppSettingsDescription("Automatically create snapshots when launching the game directly through LXCOMM."))]
+    pub automatic_snapshot_on_launch: bool,
+}
+
+impl Default for ProfileSettings {
+    fn default() -> Self {
+        Self {
+            automatic_snapshot_strategy: "Basic".to_string(),
+            automatic_snapshot_number_limit: 16,
+            automatic_snapshot_size_limit: files::GIGA as u32,
+
+            automatic_snapshot_on_apply: false,
+            automatic_snapshot_on_launch: true,
+        }
+    }
+}
+
+static PROFILE_SETTINGS_INFO: LazyLock<&bevy_reflect::StructInfo> = LazyLock::new(|| {
+    ProfileSettings::type_info()
+        .as_struct()
+        .expect("ProfileSettings should be a struct")
+});
+
+#[derive(Debug, Clone, Default)]
+pub enum ProfileSettingsMessage {
+    Edit(AppSettingEdit),
+    ResetToDefault,
+    ResetToSaved,
+    Save,
+    #[default]
+    None,
 }

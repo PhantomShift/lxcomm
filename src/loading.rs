@@ -12,7 +12,7 @@ pub fn build_active_config<D: AsRef<Path>>(
     download_dir: D,
     profile: &Profile,
 ) -> Result<(), std::io::Error> {
-    let profile_path = PROFILES_DIR.join(profile.id.to_string());
+    let profile_path = PROFILES_DIR.join(&profile.name);
 
     if !profile_path.try_exists()? {
         std::fs::create_dir(&profile_path)?;
@@ -268,12 +268,6 @@ pub fn link_profile_local_files<L: AsRef<Path>>(
         ),
     );
     ensure!(
-        local_path.as_ref().join("Config").exists(),
-        format!(
-            "cannot find 'Config' folder in {path_display}, please launch the game at least once if this is the correct folder"
-        )
-    );
-    ensure!(
         local_path.as_ref().join("Logs").exists(),
         format!(
             "cannot find 'Logs' folder in {path_display}, please launch the game at least once if this is the correct folder"
@@ -284,7 +278,7 @@ pub fn link_profile_local_files<L: AsRef<Path>>(
         format!("could not find or read {path_display}")
     );
 
-    let profile_path = PROFILES_DIR.join(profile.id.to_string());
+    let profile_path = PROFILES_DIR.join(&profile.name);
     if !profile_path.try_exists()? {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,

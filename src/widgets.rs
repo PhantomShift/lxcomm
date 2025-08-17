@@ -1,10 +1,12 @@
+use apply::Apply;
 use derivative::Derivative;
 use iced::widget::{
-    button, checkbox, column, container, horizontal_space, row, text, text_input, toggler,
+    button, checkbox, column, container, horizontal_space, pane_grid, pick_list, row, text,
+    text_input, toggler,
 };
 use iced_aw::widget::labeled_frame::LabeledFrame;
 
-use crate::{AsyncDialogKey, Message};
+use crate::{App, AsyncDialogKey, Message};
 
 #[macro_export]
 macro_rules! tooltip {
@@ -28,6 +30,10 @@ pub enum AsyncDialogField {
     Number(i64),
     Toggle(bool),
     Checkbox(bool),
+    StringEnum {
+        current: Option<String>,
+        options: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -51,6 +57,13 @@ impl AsyncDialogFields {
     pub fn get_bool<S: AsRef<str>>(&self, name: S) -> Option<bool> {
         match self.0.get(name.as_ref()) {
             Some(AsyncDialogField::Toggle(b) | AsyncDialogField::Checkbox(b)) => Some(*b),
+            _ => None,
+        }
+    }
+
+    pub fn get_string_enum<S: AsRef<str>>(&self, name: S) -> Option<&str> {
+        match self.0.get(name.as_ref()) {
+            Some(AsyncDialogField::StringEnum { current, .. }) => current.as_deref(),
             _ => None,
         }
     }
@@ -108,15 +121,30 @@ impl AsyncDialog {
                         AsyncDialogField::Checkbox(b) => {
                             container(checkbox("", *b).on_toggle(on_update!(name, Checkbox)))
                         }
+                        AsyncDialogField::StringEnum { current, options } => container(pick_list(
+                            options.as_slice(),
+                            current.as_ref(),
+                            move |new| {
+                                Message::AsyncDialogUpdate(
+                                    self.key.clone(),
+                                    name.clone(),
+                                    AsyncDialogField::StringEnum {
+                                        current: Some(new),
+                                        options: options.clone(),
+                                    },
+                                )
+                            },
+                        )),
                     },
                 )
                 .into()
             })),
         )
         .foot(row![
-            button("Cancel").on_press(Message::AsyncDialogResolved(self.key, false)),
+            button("Cancel")
+                .on_press_with(|| Message::AsyncDialogResolved(self.key.clone(), false)),
             horizontal_space(),
-            button("Submit").on_press(Message::AsyncDialogResolved(self.key, true))
+            button("Submit").on_press_with(|| Message::AsyncDialogResolved(self.key.clone(), true))
         ])
     }
 }
@@ -179,4 +207,148 @@ impl AsyncDialogBuilder {
     add_with!(with_number_default, Number, impl Into<i64>);
     add_with!(with_toggler_default, Toggle, bool);
     add_with!(with_checkbox_default, Checkbox, bool);
+
+    pub fn with_string_enum<S: Into<String>, I: IntoIterator<Item = String>>(
+        self,
+        name: S,
+        items: I,
+    ) -> Self {
+        self.with_string_enum_default(name, items, None)
+    }
+
+    pub fn with_string_enum_default<S: Into<String>, I: IntoIterator<Item = String>>(
+        mut self,
+        name: S,
+        items: I,
+        default: Option<String>,
+    ) -> Self {
+        self.inner.fields.0.insert(
+            name.into(),
+            AsyncDialogField::StringEnum {
+                current: default,
+                options: Vec::from_iter(items),
+            },
+        );
+        self
+    }
+}
+
+enum ProfilePane {
+    ProfileList,
+    ModList,
+    ModEditor,
+}
+
+pub struct ProfilePaneState {
+    inner: iced::widget::pane_grid::State<ProfilePane>,
+}
+
+impl AsRef<iced::widget::pane_grid::State<ProfilePane>> for ProfilePaneState {
+    fn as_ref(&self) -> &iced::widget::pane_grid::State<ProfilePane> {
+        &self.inner
+    }
+}
+
+impl AsMut<iced::widget::pane_grid::State<ProfilePane>> for ProfilePaneState {
+    fn as_mut(&mut self) -> &mut iced::widget::pane_grid::State<ProfilePane> {
+        &mut self.inner
+    }
+}
+
+impl Default for ProfilePaneState {
+    fn default() -> Self {
+        use iced::widget::pane_grid;
+        Self {
+            inner: pane_grid::State::with_configuration(pane_grid::Configuration::Split {
+                axis: pane_grid::Axis::Vertical,
+                ratio: 0.2,
+                a: Box::new(pane_grid::Configuration::Pane(ProfilePane::ProfileList)),
+                b: Box::new(pane_grid::Configuration::Split {
+                    axis: pane_grid::Axis::Horizontal,
+                    ratio: 0.3,
+                    a: Box::new(pane_grid::Configuration::Pane(ProfilePane::ModList)),
+                    b: Box::new(pane_grid::Configuration::Pane(ProfilePane::ModEditor)),
+                }),
+            }),
+        }
+    }
+}
+
+impl App {
+    pub fn handle_profile_resize(&mut self, resize: pane_grid::ResizeEvent) {
+        self.profile_pane_state
+            .as_mut()
+            .resize(resize.split, resize.ratio);
+    }
+
+    pub fn profiles_page(&self) -> iced::Element<'_, Message> {
+        use iced::Fill;
+        use iced::widget::pane_grid;
+
+        let profile = self
+            .selected_profile_name
+            .as_ref()
+            .and_then(|name| self.profiles.get(name.as_ref()));
+
+        pane_grid(
+            self.profile_pane_state.as_ref(),
+            move |_pane, state, _is_maximized| {
+                match state {
+                    ProfilePane::ProfileList => {
+                        macro_rules! sel_button {
+                            ($inner:expr) => {
+                                button(text($inner).height(Fill).width(Fill).size(14)).height(30)
+                            };
+                        }
+
+                        let select_col = column(self.profiles.values().map(|profile| {
+                            let style = if self
+                                .selected_profile_name
+                                .as_ref()
+                                .is_some_and(|name| **name == *profile.name)
+                            {
+                                button::secondary
+                            } else {
+                                button::primary
+                            };
+
+                            sel_button!(profile.name.as_str())
+                                .style(style)
+                                .on_press_with(|| Message::ProfileSelected(profile.name()))
+                                .into()
+                        }))
+                        .push(sel_button!("Add Profile +").on_press(Message::ProfileAddPressed))
+                        .push(
+                            sel_button!("Import Snapshot +")
+                                .on_press(Message::ProfileImportSnapshotRequested),
+                        );
+                        container(select_col)
+                    }
+                    ProfilePane::ModList => {
+                        container(profile.map(|profile| self.view_profile_mod_list(profile)))
+                    }
+                    ProfilePane::ModEditor => container(
+                        profile
+                            .and_then(|profile| {
+                                Some((profile, profile.view_selected_item.as_ref()?))
+                            })
+                            .map(|(profile, item_id)| {
+                                self.view_profile_mod_editor(profile, item_id)
+                            }),
+                    ),
+                }
+                .padding(4)
+                .apply(pane_grid::Content::new)
+                .style(|theme| {
+                    // To make it more obvious that you can resize
+                    let mut style = iced::widget::container::bordered_box(theme);
+                    style.border.color = theme.extended_palette().secondary.strong.color;
+                    style.border.width *= 2.0;
+                    style
+                })
+            },
+        )
+        .on_resize(8, Message::ProfilePageResized)
+        .into()
+    }
 }

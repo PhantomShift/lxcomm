@@ -2,7 +2,6 @@ use std::{
     collections::{BTreeMap, VecDeque},
     io::{BufRead, Write},
     path::{Path, PathBuf},
-    process::ExitStatusError,
     string::FromUtf8Error,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -62,8 +61,6 @@ pub enum Error {
     SendError(#[from] std::sync::mpsc::SendError<String>),
     #[error("download failed")]
     DownloadFailure(Box<Error>, u32),
-    #[error("child process exited with failure: {0}")]
-    ProcessFailure(#[from] ExitStatusError),
     #[error("missing field: {0}")]
     MissingField(&'static str),
     #[error("failed to log in")]
@@ -248,7 +245,7 @@ impl Session {
                                 .as_bstr()
                                 .to_string();
                         // Skip command lines (redundancy + privacy reasons)
-                        if !line.starts_with("Steam>") {
+                        if !line.is_empty() && !line.starts_with("Steam>") {
                             if line.starts_with("login") {
                                 line.replace_range("login".len().., " [REDACTED]");
                             }
@@ -481,6 +478,16 @@ impl Session {
 
     pub async fn workshop_download_item(&self, app_id: u64, file_id: u64) -> Result<(), Error> {
         self.send_command(format!("workshop_download_item {app_id} {file_id}"))?;
+        // For some reason, SteamCMD doesn't output a newline after "Downloading item [id] ..." if it errors...
+        // As a dirty work around, we continually send newlines so that we can read these delayed outputs
+        // Realistically this shouldn't lead to any errors (hopefully),
+        // but if you're reading this and have a cleaner solution, let me know lol
+        let sender = self.request_sender.clone();
+        let _force_newline = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+            while sender.send(String::from("\n")).is_ok() {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        }));
         let mut lines = self.lines();
         while let Some(line) = lines.next().await {
             if line.starts_with("ERROR!") {
@@ -652,6 +659,9 @@ impl State {
             std::fs::create_dir_all(&self.download_dir)?;
             let session = self.try_get_session()?;
             session.force_install_dir(&self.download_dir).await?;
+            if !session.await_input().await {
+                return Err(Error::Session(SessionError::Killed));
+            }
 
             let captured = self.clone();
             let report_handle =

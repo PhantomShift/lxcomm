@@ -1,6 +1,6 @@
 [package]
 name = "lxcomm"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 license = "MIT OR APACHE-2.0"
 repository = "https://github.com/phantomshift/lxcomm"
@@ -47,7 +47,7 @@ which = "8.0.0"
 notify-rust = "4.11.7"
 fancy-regex = "*"
 toml = "0.9.2"
-chrono = "0.4.41"
+chrono = { version = "0.4.41", features = ["serde"] }
 anyhow = "1.0.98"
 single-instance = { git = "https://github.com/WLBF/single-instance", version = "0.3.3" }
 zbus = { version = "5.7.1", optional = true }
@@ -58,6 +58,8 @@ governor = "0.10.0"
 portable-pty = "0.8.1"
 indexmap = { version = "2.10.0", features = ["serde"] }
 dashmap = "6.1.0"
+serde_with = "3.14.0"
+zip = { version = "4.3.0", default-features = false, features = ["zstd"] }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 iced_fonts = { git = "https://github.com/Redhawk18/iced_fonts.git", version = "0.2.0", features = ["fontawesome"], rev = "982eb5ac9a02629cc9af824e3816376e4f52fc03" }

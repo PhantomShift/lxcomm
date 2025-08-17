@@ -488,7 +488,7 @@ impl App {
                         .filter_map(|id| {
                             self.file_cache
                                 .get_details(ModId::from(*id))
-                                .and_then(ModDetails::maybe_workshop)
+                                .and_then(|file| file.maybe_workshop())
                         })
                         .fold(Task::none(), |task, file| {
                             task.chain(self.cache_item_image(&file.preview_url))

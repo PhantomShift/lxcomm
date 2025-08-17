@@ -30,7 +30,7 @@ pub enum DeleteAction {
 pub enum EditorMessage {
     NewConfigEdit(String),
     Select(String),
-    Load(usize, ModId, PathBuf),
+    Load(String, ModId, PathBuf),
     Delete(String, DeleteAction),
     Save(String),
     SaveAll,
@@ -232,7 +232,7 @@ impl Editor {
                     }
                 }
             }
-            EditorMessage::Load(profile_id, mod_id, download_dir) => {
+            EditorMessage::Load(profile_name, mod_id, download_dir) => {
                 self.current_root = None;
                 self.current_file = None;
                 self.original_buffers.clear();
@@ -241,9 +241,7 @@ impl Editor {
                 self.edit_buffers.clear();
                 self.page = EditorPage::IniEditor;
 
-                let profile_path = PROFILES_DIR
-                    .join(profile_id.to_string())
-                    .join(mod_id.get_hash());
+                let profile_path = PROFILES_DIR.join(&profile_name).join(mod_id.get_hash());
 
                 if !profile_path.exists()
                     && let Err(err) = std::fs::create_dir_all(&profile_path)

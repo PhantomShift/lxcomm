@@ -1,15 +1,12 @@
 #![feature(try_blocks)]
-#![feature(iter_intersperse)]
-#![feature(exit_status_error)]
 #![feature(path_add_extension)]
-#![feature(iter_map_windows)]
 // For windows soft links
 #![cfg_attr(target_os = "windows", feature(junction_point))]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     hash::Hash,
     ops::Not,
     path::{Path, PathBuf},
@@ -19,7 +16,7 @@ use std::{
 };
 
 use apply::Apply;
-use bevy_reflect::{GetField, Reflect, StructInfo, Type, TypeInfo, Typed};
+use bevy_reflect::{GetField, NamedField, Reflect, StructInfo, Type, TypeInfo, Typed};
 use bstr::{BString, ByteSlice};
 use derivative::Derivative;
 use etcetera::{AppStrategy, AppStrategyArgs};
@@ -36,8 +33,9 @@ use iced::{
     },
     widget::{
         self, Stack, button, checkbox, column, combo_box, container, horizontal_rule,
-        horizontal_space, image, markdown, opaque, progress_bar, rich_text, row, scrollable, span,
-        stack, text, text_editor, text_input, toggler, tooltip, vertical_rule, vertical_space,
+        horizontal_space, image, markdown, opaque, pane_grid, pick_list, progress_bar, rich_text,
+        row, scrollable, span, stack, text, text_editor, text_input, toggler, tooltip,
+        vertical_rule, vertical_space,
     },
 };
 use iced_aw::{card, widget::LabeledFrame};
@@ -45,9 +43,10 @@ use indexmap::IndexSet;
 use itertools::Itertools;
 use ringmap::RingMap;
 use secrecy::{ExposeSecret, SecretString};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use steam_rs::{self, Steam, published_file_service::query_files::PublishedFiles};
 use strum::{Display, EnumIter, IntoEnumIterator};
+use zip::ZipArchive;
 
 use crate::{
     browser::WorkshopBrowser,
@@ -55,11 +54,15 @@ use crate::{
     extensions::Truncatable,
     files::ModDetails,
     platform::symbols,
+    snapshot::SnapshotContainer,
     widgets::{AsyncDialog, AsyncDialogField},
     xcom_mod::ModId,
 };
 use crate::{collections::CollectionSource, mod_edit::EditorMessage};
 use crate::{extensions::DetailsExtension, web::resolve_all_dependencies};
+
+#[cfg(target_os = "linux")]
+use crate::platform::extensions::NotificationExtLinux;
 
 pub mod browser;
 pub mod collections;
@@ -71,6 +74,7 @@ pub mod markup;
 pub mod metadata;
 pub mod mod_edit;
 pub mod platform;
+pub mod snapshot;
 pub mod steam_manifest;
 pub mod steamcmd;
 pub mod web;
@@ -212,6 +216,7 @@ pub enum Message {
 
     Collections(CollectionsMessage),
     Settings(SettingsMessage),
+    ProfileSettings(String, library::ProfileSettingsMessage),
     ModEditor(EditorMessage),
 
     LibraryToggleItem(ModId, bool),
@@ -223,7 +228,7 @@ pub enum Message {
     CheckOutdatedCompleted(HashMap<u32, u64>),
     LibraryAddToProfileRequest,
     LibraryAddToProfileToggleAll(bool),
-    LibraryAddToProfileToggled(usize, bool),
+    LibraryAddToProfileToggled(String, bool),
     LibraryAddToProfileConfirm(Vec<ModId>),
     LibraryDeleteRequest,
     LibraryDeleteConfirm,
@@ -232,15 +237,22 @@ pub enum Message {
     ProfileAddPressed,
     ProfileAddEdited(String),
     ProfileAddCompleted(bool),
-    ProfileAddItems(usize, Vec<ModId>),
-    ProfileDeletePressed(usize),
-    ProfileDeleteConfirmed(usize),
-    ProfileRemoveItems(usize, Vec<ModId>),
-    ProfileSelected(usize),
+    ProfileAddItems(String, Vec<ModId>),
+    ProfileDeletePressed(String),
+    ProfileDeleteConfirmed(String),
+    ProfileRemoveItems(String, Vec<ModId>),
+    ProfileSelected(String),
     ProfileItemSelected(ModId),
-    ProfileViewFolderRequested(usize, String),
-    ProfileImportFolderRequested(usize, String),
+    ProfileViewFolderRequested(String, String),
+    ProfileImportFolderRequested(String, String),
     ProfileImportCollectionRequested(Arc<Collection>),
+    ProfilePageResized(pane_grid::ResizeEvent),
+    ProfileViewDetails(String),
+    ProfileExportSnapshotRequested(String),
+    ProfileImportSnapshotRequested,
+    ProfileImportBasicSnapshot(String, Arc<ZipArchive<std::fs::File>>),
+    ProfileImportIncrementalSnapshot(String, Arc<ZipArchive<std::fs::File>>),
+    ProfileImportSnapshotCompleted(library::Profile),
     ActiveProfileSelected(String),
 
     LoadPrepareProfile(bool),
@@ -347,6 +359,7 @@ pub enum AppModal {
     LibraryDeleteRequest,
     SteamGuardCodeRequest,
     ProfileAddRequest,
+    ProfileDetails(String),
     ItemDetailedView(ModId),
     CollectionDetailedView(CollectionSource),
     Busy,
@@ -378,14 +391,16 @@ pub enum AsyncDialogStrategy {
     Stack,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AsyncDialogKey {
     GameFind,
     LocalFind,
     DownloadAllConfirm,
     DownloadMultipleConfirm,
     ProfileImportCollection,
+    ProfileImportSnapshot,
     Id(usize),
+    StringId(String),
 }
 
 impl AppModal {
@@ -397,6 +412,7 @@ impl AppModal {
             LibraryDeleteRequest => true,
             SteamGuardCodeRequest => false,
             ProfileAddRequest => true,
+            ProfileDetails(_) => false,
             ItemDetailedView(_) => true,
             CollectionDetailedView(_) => true,
             Busy => false,
@@ -438,11 +454,16 @@ pub enum AppAbortKey {
     Id(usize),
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde_with::serde_as]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 struct AppSave {
     username: String,
-    profiles: BTreeMap<usize, library::Profile>,
-    active_profile: Option<usize>,
+    #[serde(rename = "profiles")]
+    _profiles: Option<BTreeMap<usize, library::Profile>>,
+    #[serde(default)]
+    tracked_profiles: BTreeSet<String>,
+    #[serde_as(as = "serde_with::DefaultOnError")]
+    active_profile: Option<String>,
     game_directory: Option<PathBuf>,
     local_directory: Option<PathBuf>,
     launch_command: Option<String>,
@@ -450,6 +471,24 @@ struct AppSave {
     launch_args: Vec<(String, String)>,
     #[serde(default)]
     local_mod_dirs: IndexSet<PathBuf>,
+}
+
+impl AppSave {
+    /// Potential TODO: figure out config/save versioning and migration for removed/renamed fields?
+    /// This is currently a one-off fix for profile migration from 0.3.*.
+    /// The alternative is requiring user intervention, perhaps provide scripts.
+    fn _migrate_profiles(&mut self) -> Option<HashMap<usize, library::Profile>> {
+        let tracked = &mut self.tracked_profiles;
+        self._profiles.as_ref().map(|profiles| {
+            profiles
+                .iter()
+                .map(move |(id, profile)| {
+                    tracked.insert(profile.name.clone());
+                    (*id, profile.to_owned())
+                })
+                .collect()
+        })
+    }
 }
 
 pub struct App {
@@ -483,60 +522,157 @@ pub struct App {
     downloaded: BTreeMap<u32, PathBuf>,
     local: BTreeSet<PathBuf>,
     library: library::Library,
+    profiles: BTreeMap<String, library::Profile>,
     file_cache: files::Cache,
     markup_cache: markup::MarkupCache,
     profile_add_name: String,
-    selected_profile_id: Option<usize>,
+    selected_profile_name: Option<Box<str>>,
     background_resolver_sender: Option<Sender<Message>>,
     mod_editor: mod_edit::Editor,
     active_profile_combo: combo_box::State<String>,
     abortable_handles: HashMap<AppAbortKey, iced::task::Handle>,
     launch_log: iced::widget::text_editor::Content,
     collections: CollectionsState,
+
+    profile_pane_state: widgets::ProfilePaneState,
 }
 
-#[derive(Debug, Reflect, Clone, Copy)]
-struct AppSettingsUnsignedRange {
-    min: u32,
-    max: u32,
+#[derive(Debug, Reflect, Clone)]
+enum AppSettingEditor {
+    StringInput,
+    SecretInput,
+    NumberInput(std::ops::RangeInclusive<u32>),
+    BoolToggle,
+    StringPick(Vec<&'static str>),
 }
 
-impl Default for AppSettingsUnsignedRange {
-    fn default() -> Self {
-        Self {
-            min: u32::MIN,
-            max: u32::MAX,
+trait AppSettingsEditorTrait<T> {
+    fn render<'a, M, F>(
+        &'a self,
+        field: &'a NamedField,
+        name: &'static str,
+        current: &'a T,
+        can_edit: bool,
+        on_update: F,
+    ) -> Element<'a, Message>
+    where
+        M: Into<Message> + 'static,
+        F: Fn(&'static str, T) -> M + 'a;
+}
+
+impl AppSettingsEditorTrait<String> for AppSettingEditor {
+    fn render<'a, M, F>(
+        &'a self,
+        _field: &'a NamedField,
+        name: &'static str,
+        current: &'a String,
+        can_edit: bool,
+        on_update: F,
+    ) -> Element<'a, Message>
+    where
+        M: Into<Message> + 'static,
+        F: Fn(&'static str, String) -> M + 'a,
+    {
+        match self {
+            AppSettingEditor::SecretInput | AppSettingEditor::StringInput => {
+                let is_secret = matches!(self, AppSettingEditor::SecretInput);
+                text_input("", current)
+                    .secure(is_secret)
+                    .on_input_maybe(can_edit.then_some(move |new| on_update(name, new).into()))
+                    .into()
+            }
+            AppSettingEditor::StringPick(options) => {
+                pick_list(options.as_slice(), Some(current.as_str()), move |new| {
+                    on_update(name, new.to_owned()).into()
+                })
+                .width(Fill)
+                .into()
+            }
+            _ => panic!(
+                "String editor should only be used with StringInput, SecretInput or StringPick"
+            ),
         }
     }
 }
 
-#[derive(Debug, Reflect, Clone, Copy)]
-enum AppSettingEditor {
-    StringInput,
-    SecretInput,
-    NumberInput,
-    BoolToggle,
+impl AppSettingsEditorTrait<bool> for AppSettingEditor {
+    fn render<'a, M, F>(
+        &'a self,
+        _field: &'a NamedField,
+        name: &'static str,
+        current: &'a bool,
+        can_edit: bool,
+        on_update: F,
+    ) -> Element<'a, Message>
+    where
+        M: Into<Message> + 'static,
+        F: Fn(&'static str, bool) -> M + 'a,
+    {
+        match self {
+            AppSettingEditor::BoolToggle => container(widget::toggler(*current).on_toggle_maybe(
+                can_edit.then_some(move |toggled| on_update(name, toggled).into()),
+            ))
+            .center_y(Fill)
+            .into(),
+            _ => panic!("Bool edit should only be used with BoolToggle"),
+        }
+    }
+}
+
+impl AppSettingsEditorTrait<u32> for AppSettingEditor {
+    fn render<'a, M, F>(
+        &'a self,
+        field: &'a NamedField,
+        name: &'static str,
+        current: &'a u32,
+        can_edit: bool,
+        on_update: F,
+    ) -> Element<'a, Message>
+    where
+        M: Into<Message> + 'static,
+        F: Fn(&'static str, u32) -> M + 'a,
+    {
+        match self {
+            AppSettingEditor::NumberInput(range) => {
+                let editor = iced_aw::number_input(current, range.to_owned(), |_| Message::None)
+                    .on_input_maybe(can_edit.then_some(move |new| on_update(name, new).into()))
+                    .width(200);
+
+                if let Some(render_preview) = field.get_attribute::<AppSettingsNumberPreview>() {
+                    row![
+                        text!("{} ", render_preview.generate_preview(*current))
+                            .height(Fill)
+                            .center(),
+                        editor
+                    ]
+                    .into()
+                } else {
+                    editor.into()
+                }
+            }
+            _ => panic!("Number edit should only be used with NumberInput"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum AppSettingEdit {
     String(&'static str, String),
-    Secret(&'static str, String),
     Number(&'static str, u32),
     Bool(&'static str, bool),
 }
 
 impl AppSettingEditor {
-    fn get_default_for(type_info: &'static TypeInfo) -> AppSettingEditor {
+    pub fn get_default_for(type_info: &'static TypeInfo) -> &'static AppSettingEditor {
         macro_rules! is_of {
             ($ty:ident,$type:ty) => {
                 $ty == Type::of::<$type>()
             };
         }
         match *type_info.ty() {
-            ty if is_of!(ty, String) => AppSettingEditor::StringInput,
-            ty if is_of!(ty, bool) => AppSettingEditor::BoolToggle,
-            ty if is_of!(ty, u32) => AppSettingEditor::NumberInput,
+            ty if is_of!(ty, String) => &AppSettingEditor::StringInput,
+            ty if is_of!(ty, bool) => &AppSettingEditor::BoolToggle,
+            ty if is_of!(ty, u32) => &AppSettingEditor::NumberInput(0..=u32::MAX),
             _ => {
                 unimplemented!(
                     "default editor is not specified for type {}",
@@ -545,6 +681,25 @@ impl AppSettingEditor {
             }
         }
     }
+}
+
+pub fn app_field_label(field: &NamedField) -> Option<Element<'_, Message>> {
+    let display = field.get_attribute::<AppSettingsLabel>()?;
+    let description = field.get_attribute::<AppSettingsDescription>();
+    Some(
+        tooltip(
+            row![text(display.0).align_y(Vertical::Center).height(Fill),]
+                .push(description.is_some().then_some(text("?").size(12))),
+            match description {
+                Some(description) => container(text(description.0))
+                    .style(container::rounded_box)
+                    .padding(16),
+                None => container(""),
+            },
+            tooltip::Position::Bottom,
+        )
+        .into(),
+    )
 }
 
 #[derive(Debug, Reflect)]
@@ -559,12 +714,26 @@ struct AppSettingsDepends(Vec<&'static str>);
 #[derive(Debug, Reflect)]
 struct AppSettingsConflicts(Vec<&'static str>);
 
-#[derive(Debug, Reflect)]
-struct AppSettingsTimePreview;
-
 /// Indicates that a setting cannot be changed in a flatpak context.
 #[derive(Debug, Reflect)]
 struct AppSettingsFlatpakLocked;
+
+#[derive(Debug, Reflect)]
+enum AppSettingsNumberPreview {
+    HumanTime,
+    FileSize,
+}
+
+impl AppSettingsNumberPreview {
+    fn generate_preview(&self, value: u32) -> String {
+        match self {
+            Self::HumanTime => {
+                humantime::format_duration(Duration::from_secs(value as u64)).to_string()
+            }
+            Self::FileSize => files::SizeDisplay::automatic(value as u64).to_string(),
+        }
+    }
+}
 
 #[derive(Derivative, Reflect, PartialEq, Serialize, Deserialize, Clone)]
 #[derivative(Debug)]
@@ -579,7 +748,7 @@ struct AppSettings {
     #[reflect(@AppSettingsDescription(r#"Maximum amount of retries when attempting to download an item.
 This is largely relevant for large mods where steamcmd will simply timeout the connection and stop the download,
 although this will also retry if any other errors occur. Set this to a higher value if you are finding that mods fail to download consistently."#))]
-    #[reflect(@AppSettingsUnsignedRange { min: 0, max: 20 })]
+    #[reflect(@AppSettingEditor::NumberInput(0..=20))]
     automatic_download_retries: u32,
 
     #[reflect(@AppSettingsLabel("Check Updates on Startup"))]
@@ -607,7 +776,8 @@ although this will also retry if any other errors occur. Set this to a higher va
     #[reflect(@AppSettingsLabel("steamcmd: Login On Startup"))]
     steamcmd_login_on_startup: bool,
     #[reflect(@AppSettingsLabel("steamcmd: Logout On Exit"))]
-    #[reflect(@AppSettingsDescription("If enabled, runs 'steamcmd +login [username] +logout + quit' when closing, necessitating that you log in again when running the app."))]
+    #[reflect(@AppSettingsDescription(r#"If enabled, runs 'logout' when closing if not currently busy with another operation,
+uncaching your login details and requiring that you log in again manually next time you use steamcmd."#))]
     steamcmd_logout_on_exit: bool,
     #[reflect(@AppSettingsLabel("steamcmd: Save Password"))]
     #[reflect(@AppSettingsDescription("If enabled, saves your Steam password to your secrets wallet to be used when opening the app again."))]
@@ -617,14 +787,19 @@ although this will also retry if any other errors occur. Set this to a higher va
     #[reflect(@AppSettingsDescription("If enabled, saves your Steam web API key to your secrets wallet to be used when opening the app again."))]
     steam_webapi_save_api_key: bool,
     #[reflect(@AppSettingsLabel("Steam Web API: Query Cache Lifetime (seconds)"))]
-    #[reflect(@AppSettingsUnsignedRange { min: 0, max: 604800 })]
-    #[reflect(@AppSettingsTimePreview)]
+    #[reflect(@AppSettingEditor::NumberInput(0..=604800))]
+    #[reflect(@AppSettingsNumberPreview::HumanTime)]
     steam_webapi_cache_lifetime: u32,
     #[reflect(@AppSettingsLabel("Steam Web API: API Key"))]
     #[reflect(@AppSettingEditor::SecretInput)]
     #[serde(skip)]
     #[derivative(Debug = "ignore")]
     steam_webapi_api_key: String,
+
+    #[reflect(@AppSettingsLabel("Test Pick List"))]
+    #[reflect(@AppSettingEditor::StringPick(vec!["Basic", "Incremental"]))]
+    #[serde(skip)]
+    test_pick: String,
 }
 
 static APP_SETTINGS_INFO: LazyLock<&StructInfo> = LazyLock::new(|| {
@@ -652,6 +827,8 @@ impl Default for AppSettings {
             steam_webapi_save_api_key: false,
             steam_webapi_cache_lifetime: 86400,
             steam_webapi_api_key: Default::default(),
+
+            test_pick: "Basic".to_string(),
         }
     }
 }
@@ -670,26 +847,126 @@ impl App {
     fn boot(
         #[cfg(feature = "dbus")] connection: zbus::blocking::Connection,
     ) -> eyre::Result<(Self, Task<Message>)> {
+        let mut reportable_errors = Vec::new();
+
         let steam_web_api_entry = keyring::Entry::new("lxcomm-steam", "steam-web-api")?;
         let steam_password_entry = keyring::Entry::new("lxcomm-steam", "steam-password")?;
 
-        let mut settings = if let Ok(true) = SETTINGS_PATH.try_exists()
-            && let Ok(file) = std::fs::File::open(&*SETTINGS_PATH)
-            && let Ok(settings) = serde_json::from_reader(file)
-        {
-            settings
-        } else {
-            AppSettings::default()
+        fn load_data<T: Default + DeserializeOwned>(
+            source: &Path,
+            name: &'static str,
+        ) -> eyre::Result<T> {
+            let res: std::io::Result<T> = try {
+                if !source.try_exists()? {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "could not find data",
+                    ))?
+                } else {
+                    let file = std::fs::File::open(source)?;
+                    let data: T = serde_json::from_reader(file)?;
+                    data
+                }
+            };
+
+            match res {
+                Ok(data) => Ok(data),
+                Err(err) => {
+                    let backup = source.with_added_extension("bak");
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        if std::fs::copy(source, &backup).is_err() {
+                            return Err(eyre::Report::new(err)
+                                    .wrap_err(format!(
+                                        "Failed to load {name} and could not automatically create a backup at {}, {name} will be lost if you do not back it up manually before closing LXCOMM.",
+                                        backup.display()
+                                    )
+                                )
+                            );
+                        } else {
+                            return Err(eyre::Report::new(err).wrap_err(format!(
+                                "Failed to load {name}, original has been backed up to {}.",
+                                backup.display()
+                            )));
+                        }
+                    };
+
+                    Ok(T::default())
+                }
+            }
+        }
+
+        let mut settings = load_data::<AppSettings>(SETTINGS_PATH.as_path(), "settings")
+            .unwrap_or_else(|report| {
+                reportable_errors.push(report);
+                AppSettings::default()
+            });
+
+        let mut save = load_data::<AppSave>(SAVE_PATH.as_path(), "application data")
+            .unwrap_or_else(|report| {
+                reportable_errors.push(report);
+                AppSave::default()
+            });
+
+        if let Some(old_profiles) = save._migrate_profiles() {
+            eprintln!("Migrating old profile data...");
+            // Keep a backup just in case
+            if let Err(err) = std::fs::File::create_new(SAVE_PATH.with_added_extension("bak"))
+                .map_err(eyre::Error::new)
+                .map(|file| serde_json::to_writer_pretty(file, &save).map_err(eyre::Error::new))
+            {
+                eprintln!(
+                    "Error creating backup of save data being migrated from old version: {err:?}"
+                );
+            }
+
+            for (id, mut profile) in old_profiles.into_iter() {
+                let name = {
+                    // In case user named their profile just a number
+                    let mut original = library::sanitize_profile_name(&profile.name);
+                    if original.parse::<usize>().is_ok() {
+                        original = format!("Profile_{original}");
+                    }
+                    original
+                };
+
+                profile.name = name.clone();
+                let old_path = PROFILES_DIR.join(id.to_string());
+                let new_dest = PROFILES_DIR.join(&name);
+                let data_path = new_dest.join(library::PROFILE_DATA_NAME);
+
+                let res: std::io::Result<()> = {
+                    if old_path.try_exists()? && !new_dest.try_exists()? {
+                        std::fs::rename(&old_path, new_dest)?;
+                        let writer = std::fs::File::create_new(data_path)?;
+                        serde_json::to_writer_pretty(writer, &profile)?;
+                    }
+                    Ok(())
+                };
+                if let Err(err) = res {
+                    reportable_errors.push(eyre::Error::new(err).wrap_err(format!(
+                        "Error migrating profile '{name}', user will need to migrate manually."
+                    )));
+                }
+            }
+
+            save._profiles = None;
         };
 
-        let save = if let Ok(true) = SAVE_PATH.try_exists()
-            && let Ok(file) = std::fs::File::open(&*SAVE_PATH)
-            && let Ok(save) = serde_json::from_reader(file)
-        {
-            save
-        } else {
-            AppSave::default()
-        };
+        let profiles = BTreeMap::from_iter(save.tracked_profiles.iter().filter_map(|tracked| {
+            match library::Profile::load_state(&PROFILES_DIR, tracked) {
+                Ok(mut profile) => {
+                    profile.settings_editing = profile.settings.clone();
+                    Some((profile.name.clone(), profile))
+                }
+                Err(err) => {
+                    reportable_errors.push(
+                        eyre::Error::new(err)
+                            .wrap_err(format!("Error occurred loading profile '{tracked}'")),
+                    );
+                    None
+                }
+            }
+        }));
 
         let steamcmd_state = Arc::new(steamcmd::State {
             username: save.username.clone(),
@@ -718,7 +995,7 @@ impl App {
         };
 
         let active_profile_combo =
-            combo_box::State::new(save.profiles.values().map(|p| p.name.clone()).collect());
+            combo_box::State::new(save.tracked_profiles.iter().cloned().collect());
 
         #[cfg(feature = "flatpak")]
         {
@@ -760,16 +1037,19 @@ impl App {
             downloaded: BTreeMap::new(),
             local: BTreeSet::new(),
             library: library::Library::default(),
+            profiles,
             file_cache: files::Cache::default(),
             markup_cache: markup::MarkupCache::default(),
             profile_add_name: String::new(),
-            selected_profile_id: None,
+            selected_profile_name: None,
             background_resolver_sender: None,
             mod_editor: mod_edit::Editor::default(),
             active_profile_combo,
             abortable_handles: HashMap::new(),
             launch_log: Default::default(),
             collections: CollectionsState::default(),
+
+            profile_pane_state: Default::default(),
         };
 
         let auto_grab_api_key = match app.credentials.steam_web_api.get_password() {
@@ -806,13 +1086,29 @@ impl App {
             Task::none()
         };
 
+        let display_errors =
+            if reportable_errors.is_empty() {
+                Task::none()
+            } else {
+                Task::batch(reportable_errors.into_iter().map(|err| {
+                    Task::done(Message::display_error("Startup Error", format!("{err:?}")))
+                }))
+            };
+
+        // Additional startup tasks
+        app.trim_snapshots();
+        app.trim_image_cache();
+
         // Potential TODO: turn this into an asynchronous task to prevent UI lockup on extremely large libraries
         app.scan_downloads();
         for path in app.save.local_mod_dirs.clone() {
             app.scan_mods(&path, false);
         }
 
-        Ok((app, Task::batch([auto_grab_api_key, auto_login])))
+        Ok((
+            app,
+            Task::batch([auto_grab_api_key, auto_login, display_errors]),
+        ))
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -820,6 +1116,11 @@ impl App {
             // TODO - Figure out a good way to decouple this
             Message::Collections(message) => return self.update_collections(message),
             Message::Settings(message) => return self.update_settings(message),
+            Message::ProfileSettings(name, message) => {
+                if let Some(profile) = self.profiles.get_mut(&name) {
+                    return profile.handle_settings_update(message);
+                }
+            }
             Message::ModEditor(message) => {
                 if let Some(task) = self.mod_editor.update(message) {
                     return task;
@@ -1377,21 +1678,6 @@ impl App {
             Message::DownloadCancelRequested(id) => {
                 if let Some(_progress) = self.download_queue.remove(&id) {
                     self.errorred_downloads.insert(id, "Cancelled".to_string());
-                    #[cfg(target_os = "linux")]
-                    if self.settings.notify_progress
-                        && let Some(notif_id) = NOTIF_CACHE.remove(&id)
-                        && let Some(details) = self.file_cache.get_details(ModId::Workshop(id))
-                    {
-                        let mut notif = notify_rust::Notification::new();
-                        let title = details.title();
-                        notif
-                            .appname("LXCOMM")
-                            .summary(&format!("{title} Not Downloaded"))
-                            .body("Download was cancelled")
-                            .timeout(-1)
-                            .id(notif_id);
-                        let _ = notif.show();
-                    }
                 }
             }
             Message::SteamCMDDownloadRequested(id) => {
@@ -1428,6 +1714,8 @@ impl App {
                     let title = details.title();
                     notif
                         .appname("LXCOMM")
+                        .icon("download")
+                        .auto_desktop_entry()
                         .summary(&format!("Downloaded {title}"))
                         .body("Downloaded Completed")
                         .timeout(-1)
@@ -1455,7 +1743,9 @@ impl App {
                             #[cfg(target_os = "linux")]
                             notif
                                 .hint(notify_rust::Hint::Category("TransferComplete".to_string()))
-                                .hint(notify_rust::Hint::Resident(true));
+                                .hint(notify_rust::Hint::Resident(true))
+                                .icon("download")
+                                .auto_desktop_entry();
 
                             #[cfg(target_os = "linux")]
                             let result = notif.show_async().await;
@@ -1484,6 +1774,8 @@ impl App {
                     let title = details.title();
                     notif
                         .appname("LXCOMM")
+                        .icon("download")
+                        .auto_desktop_entry()
                         .summary(&format!("Error Downloading {title}"))
                         .body(&message)
                         .timeout(-1)
@@ -1518,6 +1810,8 @@ impl App {
                         let mut notif = notify_rust::Notification::new();
                         notif
                             .appname("LXCOMM")
+                            .icon("download")
+                            .auto_desktop_entry()
                             .summary(&format!("Downloading {title}"))
                             .body(&format!(
                                 "{} of {} Downloaded",
@@ -1750,7 +2044,7 @@ impl App {
                 };
             }
             Message::LibraryAddToProfileRequest => {
-                for profile in self.save.profiles.values_mut() {
+                for profile in self.profiles.values_mut() {
                     profile.add_selected = false;
                 }
                 self.modal_stack.push(AppModal::AddToProfileRequest(
@@ -1761,20 +2055,18 @@ impl App {
                 ));
             }
             Message::LibraryAddToProfileToggleAll(toggled) => {
-                self.save
-                    .profiles
+                self.profiles
                     .values_mut()
                     .for_each(|p| p.add_selected = toggled);
             }
-            Message::LibraryAddToProfileToggled(id, toggle) => {
-                self.save
-                    .profiles
-                    .entry(id)
+            Message::LibraryAddToProfileToggled(name, toggle) => {
+                self.profiles
+                    .entry(name)
                     .and_modify(|profile| profile.add_selected = toggle);
             }
             Message::LibraryAddToProfileConfirm(ids) => {
+                let mut errors = Vec::new();
                 for profile in self
-                    .save
                     .profiles
                     .values_mut()
                     .filter(|profile| profile.add_selected)
@@ -1786,8 +2078,18 @@ impl App {
                             .or_insert_with(library::LibraryItemSettings::default);
                     }
                     profile.update_compatibility_issues(self.file_cache.clone(), &self.library);
+
+                    if let Err(err) = profile.save_state_in(PROFILES_DIR.as_path()) {
+                        errors.push(eyre::Error::new(err).wrap_err(format!("Failed to write to profile '{}', added mods will not be present when LXCOMM next launches.", profile.name)))
+                    }
                 }
                 self.modal_stack.pop();
+                for error in errors {
+                    let _ = self.update(Message::display_error(
+                        "Error Updating Profile",
+                        format!("{error:?}"),
+                    ));
+                }
             }
             Message::LibraryDeleteRequest => self.modal_stack.push(AppModal::LibraryDeleteRequest),
             Message::LibraryDeleteConfirm => {
@@ -1813,27 +2115,29 @@ impl App {
             }
             Message::ProfileAddCompleted(submitted) => {
                 if submitted {
-                    if self.profile_add_name.is_empty() {
+                    let name = &self.profile_add_name;
+
+                    if name.is_empty() {
                         return Task::none();
                     }
 
-                    if self
-                        .save
-                        .profiles
-                        .iter()
-                        .any(|(_id, profile)| profile.name == self.profile_add_name)
-                    {
+                    if self.profiles.contains_key(name) {
                         return Task::done(Message::DisplayError(
                             "Error".to_string(),
                             "Profile with this name already exists!".to_string(),
                         ));
                     }
 
-                    let id = (0..usize::MAX)
-                        .find(|i| !self.save.profiles.contains_key(i))
-                        .expect("profile should never reasonably contain > usize::MAX items");
+                    if let Err(message) = library::validate_profile_name(name) {
+                        return Task::done(Message::display_error("Invalid Name", message));
+                    }
 
-                    let profile_path = PROFILES_DIR.join(id.to_string());
+                    let profile_path = PROFILES_DIR.join(name);
+                    let profile = library::Profile {
+                        name: name.to_owned(),
+                        items: BTreeMap::new(),
+                        ..Default::default()
+                    };
                     let result: std::io::Result<()> = try {
                         if let Ok(true) = profile_path.try_exists() {
                             std::fs::remove_dir_all(&profile_path)?
@@ -1842,6 +2146,10 @@ impl App {
                         for name in library::profile_folder::ALL.iter() {
                             std::fs::create_dir(profile_path.join(name))?;
                         }
+                        let writer = std::fs::File::create_new(
+                            profile_path.join(library::PROFILE_DATA_NAME),
+                        )?;
+                        serde_json::to_writer_pretty(writer, &profile)?;
                     };
                     if let Err(err) = result {
                         return Task::done(Message::display_error(
@@ -1850,30 +2158,18 @@ impl App {
                         ));
                     }
 
-                    self.save.profiles.insert(
-                        id,
-                        library::Profile {
-                            id,
-                            name: self.profile_add_name.clone(),
-                            items: BTreeMap::new(),
-                            ..Default::default()
-                        },
-                    );
-                    self.selected_profile_id = Some(id);
-                    self.active_profile_combo = combo_box::State::new(
-                        self.save
-                            .profiles
-                            .values()
-                            .map(|p| &p.name)
-                            .cloned()
-                            .collect(),
-                    );
+                    self.profiles.insert(self.profile_add_name.clone(), profile);
+                    self.save.tracked_profiles.insert(name.to_owned());
+                    self.selected_profile_name = Some(name.to_owned().into_boxed_str());
+                    self.active_profile_combo =
+                        combo_box::State::new(self.save.tracked_profiles.iter().cloned().collect());
                 }
                 self.modal_stack.pop();
             }
             Message::ProfileAddEdited(name) => self.profile_add_name = name,
-            Message::ProfileAddItems(id, items) => {
-                self.save.profiles.entry(id).and_modify(|profile| {
+            Message::ProfileAddItems(name, items) => {
+                let mut err = None;
+                self.profiles.entry(name).and_modify(|profile| {
                     profile.items.extend(
                         items
                             .into_iter()
@@ -1881,11 +2177,20 @@ impl App {
                     );
 
                     profile.update_compatibility_issues(self.file_cache.clone(), &self.library);
+
+                    err = profile.save_state_in(PROFILES_DIR.as_path()).err();
                 });
+
+                if let Some(err) = err {
+                    return Task::done(Message::display_error(
+                        "Error Updating Profile",
+                        format!("Failed to write changes to disk: {err:?}"),
+                    ));
+                }
             }
-            Message::ProfileDeletePressed(id) => {
+            Message::ProfileDeletePressed(name) => {
                 let (modal, mut rec) = AppModal::async_choose(
-                    AsyncDialogKey::Id(id),
+                    AsyncDialogKey::StringId(name.clone()),
                     "Delete Profile",
                     "Are you sure you want to delete this profile?",
                     vec!["No".to_string(), "Yes".to_string()],
@@ -1895,27 +2200,54 @@ impl App {
                 self.modal_stack.push(modal);
                 return Task::future(async move {
                     if let Some(1) = rec.next().await {
-                        Message::ProfileDeleteConfirmed(id)
+                        Message::ProfileDeleteConfirmed(name)
                     } else {
                         Message::CloseModal
                     }
                 });
             }
-            Message::ProfileDeleteConfirmed(id) => {
-                self.save.profiles.remove(&id);
-                if Some(id) == self.save.active_profile {
-                    self.save.active_profile = None;
+            Message::ProfileDeleteConfirmed(name) => {
+                if self.profiles.remove(&name).is_some() {
+                    self.save.tracked_profiles.remove(&name);
+                    if Some(&name) == self.save.active_profile.as_ref() {
+                        self.save.active_profile = None;
+                    }
                 }
             }
-            Message::ProfileRemoveItems(id, items) => {
-                self.save.profiles.entry(id).and_modify(|profile| {
-                    profile.items.retain(|id, _| !items.contains(id));
-                    profile.update_compatibility_issues(self.file_cache.clone(), &self.library);
-                });
+            Message::ProfileRemoveItems(name, items) => {
+                let Some(profile) = self.profiles.get_mut(&name) else {
+                    eprintln!("Attempted to access non-existent profile...");
+                    return Task::none();
+                };
 
-                if let Some(selected) = self.selected_profile_id
-                    && id == selected
-                    && let Some(profile) = self.save.profiles.get_mut(&selected)
+                let path = PROFILES_DIR.join(&name).join(library::PROFILE_DATA_NAME);
+                let Some(file) = path
+                    .exists()
+                    .then_some(std::fs::File::create(&path).ok())
+                    .flatten()
+                else {
+                    return Task::done(Message::display_error(
+                        "Write Error",
+                        format!("Failed to open {}", path.display()),
+                    ));
+                };
+
+                profile.items.retain(|id, _| !items.contains(id));
+                profile.update_compatibility_issues(self.file_cache.clone(), &self.library);
+
+                if let Err(err) = profile.save_into(file) {
+                    return Task::done(Message::display_error(
+                        "Profile Corrupted",
+                        format!(
+                            "Failed to write to {} when saving profile: {err:?}",
+                            path.display()
+                        ),
+                    ));
+                }
+
+                if let Some(selected) = &self.selected_profile_name
+                    && *name == **selected
+                    && let Some(profile) = self.profiles.get_mut(selected.as_ref())
                     && profile
                         .view_selected_item
                         .as_ref()
@@ -1925,9 +2257,9 @@ impl App {
                     profile.view_selected_item = None;
                 }
             }
-            Message::ProfileSelected(id) => {
-                self.selected_profile_id = Some(id);
-                if let Some(profile) = self.save.profiles.get(&id) {
+            Message::ProfileSelected(name) => {
+                self.selected_profile_name = Some(name.clone().into_boxed_str());
+                if let Some(profile) = self.profiles.get(&name) {
                     let mut tasks = Vec::new();
                     for id in profile.items.keys() {
                         if let Some(ModDetails::Workshop(details)) = self.file_cache.get_details(id)
@@ -1948,8 +2280,8 @@ impl App {
                     ));
                 }
 
-                if let Some(selected) = self.selected_profile_id
-                    && let Some(profile) = self.save.profiles.get_mut(&selected)
+                if let Some(selected) = &self.selected_profile_name
+                    && let Some(profile) = self.profiles.get_mut(selected.as_ref())
                 {
                     if Some(&id) == profile.view_selected_item.as_ref() {
                         profile.view_selected_item = None;
@@ -1957,7 +2289,7 @@ impl App {
                         profile.view_selected_item = Some(id.clone());
 
                         if let Some(task) = self.mod_editor.update(mod_edit::EditorMessage::Load(
-                            selected,
+                            selected.to_string(),
                             id,
                             PathBuf::from(&self.settings.download_directory),
                         )) {
@@ -1966,7 +2298,7 @@ impl App {
                     }
                 }
             }
-            Message::ProfileViewFolderRequested(id, name) => {
+            Message::ProfileViewFolderRequested(profile_name, name) => {
                 if !library::profile_folder::ALL.contains(&name.as_str()) {
                     return Task::done(Message::display_error(
                         "Does Not Exist",
@@ -1974,7 +2306,7 @@ impl App {
                     ));
                 }
 
-                let path = PROFILES_DIR.join(id.to_string()).join(name);
+                let path = PROFILES_DIR.join(&profile_name).join(name);
 
                 if let Err(err) = opener::open(&path) {
                     return Task::done(Message::display_error(
@@ -1983,7 +2315,7 @@ impl App {
                     ));
                 }
             }
-            Message::ProfileImportFolderRequested(id, name) => {
+            Message::ProfileImportFolderRequested(profile_name, name) => {
                 return Task::done(Message::SetBusy(true))
                     .chain(Task::perform({
                         let name = name.clone();
@@ -2013,7 +2345,7 @@ impl App {
                                 _ => {}
                             }
 
-                            let profile_dir = PROFILES_DIR.join(id.to_string());
+                            let profile_dir = PROFILES_DIR.join(&profile_name);
                             let dest = profile_dir.join(name);
                             if dest.try_exists()? {
                                 tokio::fs::remove_dir_all(&dest).await?;
@@ -2040,16 +2372,7 @@ impl App {
                         .with_string_default("Name", &collection.title)
                         .finish();
 
-                let next_unused = (0..usize::MAX)
-                    .find(|i| !self.save.profiles.contains_key(i))
-                    .expect("there should not reasonably be usize::MAX profiles");
-
-                let used_names = self
-                    .save
-                    .profiles
-                    .values()
-                    .map(|profile| profile.name.clone())
-                    .collect::<Vec<_>>();
+                let used_names = self.profiles.keys().cloned().collect::<HashSet<_>>();
 
                 return Task::batch([
                     Task::future(async move {
@@ -2068,12 +2391,14 @@ impl App {
                                         "Name In Use",
                                         "There is already a profile with this name.",
                                     )
+                                } else if let Err(message) = library::validate_profile_name(&name) {
+                                    Message::display_error("Invalid Name", message)
                                 } else {
                                     Message::Chained(vec![
-                                        Message::ProfileAddEdited(name),
+                                        Message::ProfileAddEdited(name.clone()),
                                         Message::ProfileAddCompleted(true),
                                         Message::ProfileAddItems(
-                                            next_unused,
+                                            name,
                                             collection.items.iter().map(ModId::from).collect(),
                                         ),
                                     ])
@@ -2085,12 +2410,273 @@ impl App {
                     Task::done(Message::OpenModal(Arc::new(AppModal::AsyncDialog(dialog)))),
                 ]);
             }
+            Message::ProfilePageResized(resize) => self.handle_profile_resize(resize),
+            Message::ProfileViewDetails(name) => {
+                self.modal_stack.push(AppModal::ProfileDetails(name));
+            }
+            Message::ProfileExportSnapshotRequested(name) => {
+                if !self.save.tracked_profiles.contains(&name) {
+                    return Task::none();
+                }
+
+                let source = PROFILES_DIR.join(&name);
+                if !source.exists() {
+                    return Task::done(Message::display_error(
+                        "Profile Not Found",
+                        format!("Failed to read profile directory for '{name}'."),
+                    ));
+                }
+
+                let task = Task::future(async move {
+                    let now = chrono::Utc::now();
+                    if let Some(destination) = rfd::AsyncFileDialog::new()
+                        .set_title("Pick Snapshot Output")
+                        .add_filter("Zip File", &["zip"])
+                        .set_directory(snapshot::SNAPSHOTS_DIR.as_path())
+                        .set_file_name(format!("{name}_{}.zip", now.format("%Y.%m.%d_%Hh%Mm%Ss")))
+                        .save_file()
+                        .await
+                        .map(|handle| {
+                            if handle.path().extension().is_some_and(|ext| ext == "zip") {
+                                handle.path().to_path_buf()
+                            } else {
+                                handle.path().with_added_extension("zip")
+                            }
+                        })
+                    {
+                        match snapshot::BasicSnapshotBuilder::new(source, destination.clone())
+                            .comment(format!(
+                                "Snapshot of '{name}' automatically generated at {now}."
+                            ))
+                            .finalize()
+                        {
+                            Err(err) => Message::display_error(
+                                "Snapshot Failed",
+                                eyre::Error::new(err)
+                                    .wrap_err("Failed to load snapshot")
+                                    .to_string(),
+                            ),
+                            Ok(name) => Message::display_error(
+                                "Success",
+                                format!(
+                                    "Snapshot '{name}' successfully exported to '{}'",
+                                    destination.display()
+                                ),
+                            ),
+                        }
+                    } else {
+                        Message::None
+                    }
+                });
+
+                return Task::done(Message::SetBusy(true))
+                    .chain(task)
+                    .chain(Task::done(Message::SetBusy(false)));
+            }
+            Message::ProfileImportSnapshotRequested => {
+                let used_names = self.save.tracked_profiles.clone();
+                let (dialog, mut receiver) = AsyncDialog::builder(
+                    AsyncDialogKey::ProfileImportSnapshot,
+                    "Pick Name",
+                    "Pick a name for the imported profile",
+                )
+                .with_string("Profile Name")
+                .finish();
+
+                let task = Task::done(Message::SetBusy(true))
+                    .chain(Task::done(Message::OpenModal(Arc::new(
+                        AppModal::AsyncDialog(dialog),
+                    ))))
+                    .chain(Task::future(async move {
+                        if let Some(response) = receiver.next().await.flatten() {
+                            let name = response
+                                .get_string("Profile Name")
+                                .map(str::to_owned)
+                                .unwrap_or_default();
+
+                            if let Err(err) = library::validate_profile_name(&name) {
+                                return Message::display_error("Invalid Profile Name", err);
+                            };
+
+                            if used_names.contains(&name) {
+                                return Message::display_error(
+                                    "Invalid Profile Name",
+                                    format!("Profile with name '{name}' already exists."),
+                                );
+                            }
+
+                            let Some(path) = rfd::AsyncFileDialog::new()
+                                .set_title("Pick Snapshot")
+                                .add_filter("Zip File", &["zip"])
+                                .set_directory(snapshot::SNAPSHOTS_DIR.as_path())
+                                .pick_file()
+                                .await
+                                .map(|handle| handle.path().to_path_buf())
+                            else {
+                                return Message::None;
+                            };
+
+                            let archive = match std::fs::File::open(&path)
+                                .and_then(|f| ZipArchive::new(f).map_err(Into::into))
+                            {
+                                Err(err) => {
+                                    let err = eyre::Error::new(err)
+                                        .wrap_err("Could not read picked zip archive.");
+                                    return Message::display_error(
+                                        "Invalid Archive",
+                                        format!("{err:?}"),
+                                    );
+                                }
+                                Ok(archive) => archive,
+                            };
+
+                            match archive.snapshot_type() {
+                                snapshot::SnapshotType::Invalid => Message::display_error(
+                                    "Invalid Archive",
+                                    "The picked zip archive was not an LXCOMM snapshot.",
+                                ),
+                                snapshot::SnapshotType::Basic => {
+                                    Message::ProfileImportBasicSnapshot(name, Arc::new(archive))
+                                }
+                                snapshot::SnapshotType::Incremental => {
+                                    Message::ProfileImportIncrementalSnapshot(
+                                        name,
+                                        Arc::new(archive),
+                                    )
+                                }
+                            }
+                        } else {
+                            Message::None
+                        }
+                    }))
+                    .chain(Task::done(Message::SetBusy(false)));
+
+                return task;
+            }
+            Message::ProfileImportBasicSnapshot(name, archive) => {
+                let Ok(archive) = Arc::try_unwrap(archive) else {
+                    return Task::done(Message::display_error(
+                        "Unexpected Error",
+                        "Unexpected error occurred attempting to import snapshot. Please report this to the devs.",
+                    ));
+                };
+
+                return Task::done(Message::busy_message("Importing snapshot..."))
+                    .chain(Task::future(async move {
+                        match tokio::task::spawn_blocking(move || {
+                            snapshot::load_basic_snapshot(name.clone(), &PROFILES_DIR, archive)
+                        })
+                        .await
+                        {
+                            Err(err) => Message::display_error(
+                                "Unexpected Error",
+                                format!("Unexpected error while importing profile: {err:#?}"),
+                            ),
+                            Ok(Err(err)) => {
+                                let err =
+                                    eyre::Error::new(err).wrap_err("Failed to import snapshot");
+                                Message::display_error("Error Importing", format!("{err:#?}"))
+                            }
+                            Ok(Ok(profile)) => Message::ProfileImportSnapshotCompleted(profile),
+                        }
+                    }))
+                    .chain(Task::done(Message::SetBusy(false)));
+            }
+            Message::ProfileImportIncrementalSnapshot(name, archive) => {
+                let Ok(mut archive) = Arc::try_unwrap(archive) else {
+                    return Task::done(Message::display_error(
+                        "Unexpected Error",
+                        "Unexpected error occurred attempting to import snapshot. Please report this to the devs.",
+                    ));
+                };
+
+                let timestamps = match snapshot::list_incremental_snapshots(&mut archive) {
+                    Err(err) => {
+                        let err = eyre::Error::new(err).wrap_err("Failed to read from archive.");
+                        return Task::done(Message::display_error(
+                            "Error Reading Archive",
+                            format!("{err:#}"),
+                        ));
+                    }
+                    Ok(list) => list,
+                };
+
+                let _ = self.update(Message::busy_message("Importing snapshot..."));
+
+                let receiver = if timestamps.len() <= 1 {
+                    None
+                } else {
+                    let (dialog, receiver) = AsyncDialog::builder(
+                        AsyncDialogKey::ProfileImportSnapshot,
+                        "Pick Snapshot Date",
+                        "Pick date to load snapshot from.",
+                    )
+                    .with_string_enum(
+                        "Timestamp",
+                        timestamps.iter().filter_map(|i| {
+                            let date_time = chrono::DateTime::from_timestamp(*i, 0)?
+                                .with_timezone(&chrono::Local);
+                            Some(format!("{}", date_time.format("%c")))
+                        }),
+                    )
+                    .finish();
+                    self.modal_stack.push(AppModal::AsyncDialog(dialog));
+                    Some(receiver)
+                };
+
+                return Task::future(async move {
+                    let stop_at = if let Some(mut receiver) = receiver {
+                        let Some(response) = receiver.next().await.flatten() else {
+                            return Message::None;
+                        };
+                        response
+                            .get_string_enum("Timestamp")
+                            .and_then(|formatted| {
+                                chrono::NaiveDateTime::parse_from_str(formatted, "%c").ok()
+                            })
+                            .and_then(|dt| {
+                                dt.and_local_timezone(chrono::Local)
+                                    .single()
+                                    .map(|dt| dt.timestamp())
+                            })
+                    } else {
+                        None
+                    };
+
+                    dbg!(stop_at);
+
+                    match tokio::task::spawn_blocking(move || {
+                        snapshot::load_incremental_snapshot(
+                            name.clone(),
+                            &PROFILES_DIR,
+                            archive,
+                            stop_at,
+                        )
+                    })
+                    .await
+                    {
+                        Err(err) => Message::display_error(
+                            "Unexpected Error",
+                            format!("Unexpected error while importing profile: {err:#?}"),
+                        ),
+                        Ok(Err(err)) => {
+                            let err = eyre::Error::new(err).wrap_err("Failed to import snapshot");
+                            Message::display_error("Error Importing", format!("{err:#?}"))
+                        }
+                        Ok(Ok(profile)) => Message::ProfileImportSnapshotCompleted(profile),
+                    }
+                })
+                .chain(Task::done(Message::SetBusy(false)));
+            }
+            Message::ProfileImportSnapshotCompleted(mut profile) => {
+                profile.settings_editing = profile.settings.clone();
+                self.save.tracked_profiles.insert(profile.name());
+                self.profiles.insert(profile.name(), profile);
+            }
             Message::ActiveProfileSelected(name) => {
-                self.save.active_profile = self
-                    .save
-                    .profiles
-                    .iter()
-                    .find_map(|(id, p)| (p.name == name).then_some(*id))
+                if self.profiles.contains_key(&name) {
+                    self.save.active_profile = Some(name);
+                }
             }
 
             Message::LoadPrepareProfile(manual) => {
@@ -2124,8 +2710,8 @@ impl App {
                     ));
                 }
 
-                if let Some(active) = self.save.active_profile
-                    && let Some(profile) = self.save.profiles.get(&active)
+                if let Some(active) = &self.save.active_profile
+                    && let Some(profile) = self.profiles.get(active)
                 {
                     if let Err(err) = loading::bootstrap_load_profile(
                         profile,
@@ -2139,11 +2725,36 @@ impl App {
                             format!("{err:#?}"),
                         ));
                     } else if manual {
-                        // TODO - More generic dialog name, just using error for now
-                        return Task::done(Message::display_error(
-                            "Success",
-                            "Config was successfully applied.",
-                        ));
+                        return if profile.settings.automatic_snapshot_on_apply {
+                            Task::done(Message::SetBusyMessage(
+                                "Generating Automatic Snapshot...".to_string(),
+                            ))
+                            .chain(Task::perform(
+                                profile.generate_automatic_snapshot(),
+                                |res| {
+                                    if let Err(err) = res {
+                                        let err = eyre::Error::new(err)
+                                            .wrap_err("Failed to create an automatic snapshot.");
+                                        Message::display_error(
+                                            "Error Generating Snapshot",
+                                            format!("{err:?}"),
+                                        )
+                                    } else {
+                                        Message::display_error(
+                                            "Success",
+                                            "Config was successfully applied.",
+                                        )
+                                    }
+                                },
+                            ))
+                            .chain(Task::done(Message::SetBusy(false)))
+                        } else {
+                            // TODO - More generic dialog name, just using error for now
+                            Task::done(Message::display_error(
+                                "Success",
+                                "Config was successfully applied.",
+                            ))
+                        };
                     }
                 }
             }
@@ -2212,19 +2823,42 @@ impl App {
                     }
 
                     let args = self.save.launch_args.clone();
-                    let busy = Task::done(Message::SetBusy(true));
-                    busy.chain(Task::future(async move {
-                        let mut command = std::process::Command::new(command);
-                        command.stdout(Stdio::null());
 
-                        for (l, r) in args {
-                            if !l.is_empty() {
-                                command.arg(l);
+                    let generate = self
+                        .save
+                        .active_profile
+                        .as_ref()
+                        .and_then(|name| self.profiles.get(name))
+                        .filter(|profile| profile.settings.automatic_snapshot_on_launch)
+                        .map(|profile| profile.generate_automatic_snapshot());
+
+                    let _ = if generate.is_some() {
+                        self.update(Message::SetBusyMessage(
+                            "Generating Automatic Snapshot...".to_string(),
+                        ))
+                    } else {
+                        self.update(Message::SetBusy(true))
+                    };
+
+                    Task::future(async move {
+                        let io_result: std::io::Result<()> = try {
+                            if let Some(generate) = generate {
+                                generate.await?;
                             }
-                            command.arg(r);
-                        }
 
-                        if let Err(err) = command.spawn() {
+                            let mut command = std::process::Command::new(command);
+                            command.stdout(Stdio::null());
+
+                            for (l, r) in args {
+                                if !l.is_empty() {
+                                    command.arg(l);
+                                }
+                                command.arg(r);
+                            }
+                            command.spawn()?;
+                        };
+
+                        if let Err(err) = io_result {
                             Message::Chained(vec![
                                 Message::SetBusy(false),
                                 Message::display_error(
@@ -2236,7 +2870,7 @@ impl App {
                             tokio::time::sleep(Duration::from_secs(5)).await;
                             Message::SetBusy(false)
                         }
-                    }))
+                    })
                     .chain(self.setup_launch_log_monitor())
                 } else {
                     Task::done(Message::DisplayError(
@@ -2532,7 +3166,7 @@ impl App {
 
         match message {
             SettingsMessage::Edit(edit) => match edit {
-                AppSettingEdit::String(name, new) | AppSettingEdit::Secret(name, new) => {
+                AppSettingEdit::String(name, new) => {
                     apply!(name, String, new)
                 }
                 AppSettingEdit::Bool(name, new) => apply!(name, bool, new),
@@ -2645,158 +3279,141 @@ impl App {
         Task::none()
     }
 
-    fn view_profile<'a>(&'a self, profile: &'a library::Profile) -> Element<'a, Message> {
+    fn view_profile_mod_list<'a>(
+        &'a self,
+        profile: &'a library::Profile,
+    ) -> widget::Column<'a, Message> {
         column![
-            text(&profile.name).size(24),
-            container(
-                container(
-                    column![
-                        row(library::profile_folder::ALL.iter().map(|name| {
-                            button(text!("View {name}"))
-                                .on_press_with(|| {
-                                    Message::ProfileViewFolderRequested(
-                                        profile.id,
-                                        name.to_string(),
-                                    )
-                                })
-                                .into()
-                        }))
-                        .extend(library::profile_folder::ALL.iter().map(|name| {
-                            button(text!("Import {name}"))
-                                .on_press_with(|| {
-                                    Message::ProfileImportFolderRequested(
-                                        profile.id,
-                                        name.to_string(),
-                                    )
-                                })
-                                .style(button::secondary)
-                                .into()
-                        }))
-                        .push(
-                            // TODO - add confirmation
-                            button("Delete Profile")
-                                .style(button::danger)
-                                .on_press(Message::ProfileDeletePressed(profile.id)),
-                        )
-                        .wrap(),
-                        text("Mods").size(20),
-                        scrollable(column(profile.items.keys().map(|id| {
-                            let mut issues = vec![];
-                            let missing = if let ModId::Workshop(id) = id
-                                && !self.item_downloaded(*id)
-                            {
-                                issues
-                                    .push("Missing: Mod is not downloaded (or found)".to_string());
-                                true
-                            } else if let ModId::Local(path) = id
-                                && !path.exists()
-                            {
-                                issues
-                                    .push(format!("Missing: Could find mod at {}", path.display()));
-                                true
-                            } else {
-                                false
-                            };
-
-                            issues.extend(
-                                profile
-                                    .compatibility_issues
-                                    .get(id)
-                                    .map(Vec::as_slice)
-                                    .unwrap_or_default()
-                                    .iter()
-                                    .map(|item| match item {
-                                        library::CompatibilityIssue::MissingWorkshop(
-                                            _id,
-                                            message,
-                                        ) => {
-                                            format!("Missing Workshop Dependency: {message}")
-                                        }
-                                        library::CompatibilityIssue::MissingRequired(dlc_name) => {
-                                            format!("Missing Dependency: {dlc_name}")
-                                        }
-                                        library::CompatibilityIssue::Incompatible(dlc_name) => {
-                                            format!("Incompatible Mod: {dlc_name}")
-                                        }
-                                        library::CompatibilityIssue::Overlapping(
-                                            name,
-                                            provides,
-                                        ) => {
-                                            format!(
-                                                "{name} Provides Same DLCNames: {}",
-                                                provides.iter().join(", ")
-                                            )
-                                        }
-                                        library::CompatibilityIssue::Unknown => {
-                                            "Missing Info".to_string()
-                                        }
-                                    }),
-                            );
-
-                            let button_style = if let Some(sel_id) = &profile.view_selected_item
-                                && sel_id == id
-                            {
-                                button::secondary
-                            } else if !issues.is_empty() {
-                                button::danger
-                            } else {
-                                button::primary
-                            };
-                            let missing_text = if missing { " (MISSING)" } else { "" };
-                            let select = if let Some(details) = self.file_cache.get_details(id) {
-                                button(text!("{} ({id}){missing_text}", details.title()))
-                                    .on_press_with(|| Message::ProfileItemSelected(id.clone()))
-                            } else {
-                                button(text!("UNKNOWN ({id}){missing_text}"))
-                            }
-                            .style(button_style)
-                            .width(Fill);
-
-                            if !issues.is_empty() {
-                                row![
-                                    button("X").style(button::danger).on_press_with(|| {
-                                        Message::ProfileRemoveItems(profile.id, vec![id.clone()])
-                                    }),
-                                    tooltip!(
-                                        select,
-                                        column(issues.into_iter().map(|s| text(s).into())),
-                                        tooltip::Position::Bottom,
-                                    )
-                                ]
-                                .into()
-                            } else {
-                                select.into()
-                            }
-                        })))
-                        .height(128),
-                    ]
-                    .push(profile.view_selected_item.as_ref().map(|item_id| {
-                        row![
-                            button("View Details")
-                                .on_press_with(|| Message::SetViewingItem(item_id.clone())),
-                            horizontal_space(),
-                            button("Remove Mod")
-                                .style(button::danger)
-                                .on_press_with(|| Message::ProfileRemoveItems(
-                                    profile.id,
-                                    vec![item_id.clone()]
-                                ))
-                        ]
-                    }))
-                    .push(
-                        profile
-                            .view_selected_item
-                            .is_some()
-                            .then(|| self.mod_editor.view(self))
-                    )
-                )
-                .width(Fill)
-                .padding(8)
-                .style(container::dark)
+            row!(
+                button("View Details")
+                    .on_press_with(|| Message::ProfileViewDetails(profile.name()))
             )
-            .padding(16),
+            .extend(library::profile_folder::ALL.iter().map(|name| {
+                button(text!("View {name}"))
+                    .on_press_with(|| {
+                        Message::ProfileViewFolderRequested(profile.name(), name.to_string())
+                    })
+                    .into()
+            }))
+            .extend(library::profile_folder::ALL.iter().map(|name| {
+                button(text!("Import {name}"))
+                    .on_press_with(|| {
+                        Message::ProfileImportFolderRequested(profile.name(), name.to_string())
+                    })
+                    .style(button::secondary)
+                    .into()
+            }))
+            .push(
+                button("Export Snapshot")
+                    .style(button::success)
+                    .on_press_with(|| Message::ProfileExportSnapshotRequested(profile.name()))
+            )
+            .push(
+                button("Delete Profile")
+                    .style(button::danger)
+                    .on_press_with(|| Message::ProfileDeletePressed(profile.name())),
+            )
+            .wrap(),
+            text("Mods").size(20),
+            scrollable(column(profile.items.keys().map(|id| {
+                let mut issues = vec![];
+                let missing = if let ModId::Workshop(id) = id
+                    && !self.item_downloaded(*id)
+                {
+                    issues.push("Missing: Mod is not downloaded (or found)".to_string());
+                    true
+                } else if let ModId::Local(path) = id
+                    && !path.exists()
+                {
+                    issues.push(format!("Missing: Could find mod at {}", path.display()));
+                    true
+                } else {
+                    false
+                };
+
+                issues.extend(
+                    profile
+                        .compatibility_issues
+                        .get(id)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|item| match item {
+                            library::CompatibilityIssue::MissingWorkshop(_id, message) => {
+                                format!("Missing Workshop Dependency: {message}")
+                            }
+                            library::CompatibilityIssue::MissingRequired(dlc_name) => {
+                                format!("Missing Dependency: {dlc_name}")
+                            }
+                            library::CompatibilityIssue::Incompatible(dlc_name) => {
+                                format!("Incompatible Mod: {dlc_name}")
+                            }
+                            library::CompatibilityIssue::Overlapping(name, provides) => {
+                                format!(
+                                    "{name} Provides Same DLCNames: {}",
+                                    provides.iter().join(", ")
+                                )
+                            }
+                            library::CompatibilityIssue::Unknown => "Missing Info".to_string(),
+                        }),
+                );
+
+                let button_style = if let Some(sel_id) = &profile.view_selected_item
+                    && sel_id == id
+                {
+                    button::secondary
+                } else if !issues.is_empty() {
+                    button::danger
+                } else {
+                    button::primary
+                };
+                let missing_text = if missing { " (MISSING)" } else { "" };
+                let select = if let Some(details) = self.file_cache.get_details(id) {
+                    button(text!("{} ({id}){missing_text}", details.title()))
+                        .on_press_with(|| Message::ProfileItemSelected(id.clone()))
+                } else {
+                    button(text!("UNKNOWN ({id}){missing_text}"))
+                }
+                .style(button_style)
+                .width(Fill);
+
+                if !issues.is_empty() {
+                    row![
+                        button("X").style(button::danger).on_press_with(|| {
+                            Message::ProfileRemoveItems(profile.name(), vec![id.clone()])
+                        }),
+                        tooltip!(
+                            select,
+                            column(issues.into_iter().map(|s| text(s).into())),
+                            tooltip::Position::Bottom,
+                        )
+                    ]
+                    .into()
+                } else {
+                    select.into()
+                }
+            })))
         ]
-        .into()
+    }
+
+    fn view_profile_mod_editor<'a>(
+        &'a self,
+        profile: &'a library::Profile,
+        item_id: &'a ModId,
+    ) -> widget::Column<'a, Message> {
+        column![
+            row![
+                button("View Details").on_press_with(|| Message::SetViewingItem(item_id.clone())),
+                horizontal_space(),
+                button("Remove Mod")
+                    .style(button::danger)
+                    .on_press_with(|| Message::ProfileRemoveItems(
+                        profile.name(),
+                        vec![item_id.clone()]
+                    ))
+            ],
+            self.mod_editor.view(self)
+        ]
     }
 
     fn view_item_detailed<'a>(&'a self, id: &'a ModId) -> Element<'a, Message> {
@@ -2868,6 +3485,19 @@ impl App {
                     .padding(16),
                     column![
                         text(file.title().to_owned()).size(18),
+                        file.maybe_workshop().map(|file| {
+                            tooltip!(rich_text([text::Span::new("Author: "), text::Span::new(web::get_user_display_name(steam_rs::Steam::new(self.api_key.expose_secret()), file.creator.0)).link(file.creator.0)]).on_link_click(|id: u64| {
+                                web::open_browser(format!("https://steamcommunity.com/profiles/{id}/myworkshopfiles/?appid={XCOM_APPID}"))
+                            }), "Open in Browser")
+                        }),
+                        id.maybe_workshop().map(|id| {
+                            tooltip!(
+                                rich_text([text::Span::new(id.to_string()).link(id)]).on_link_click(|id: u32| {
+                                    web::open_browser(format!("https://steamcommunity.com/sharedfiles/filedetails/?id={id}"))
+                                }),
+                                "Open in Browser",
+                            )
+                        }),
                         text!("{:.2} out of 10", file.get_score() * 10.0),
                     ]
                     .push(file.children().is_empty().not().then(|| {
@@ -2982,7 +3612,7 @@ impl App {
         iced_aw::card(text(title).width(Fill), column![scrollable(text(body)),])
             .foot(row(options.iter().enumerate().map(|(i, display)| {
                 button(text(display))
-                    .on_press(Message::AsyncChooseResolve(*key, i))
+                    .on_press_with(move || Message::AsyncChooseResolve(key.clone(), i))
                     .into()
             })))
             .max_height(512.0)
@@ -2996,28 +3626,13 @@ impl App {
         let col = column(APP_SETTINGS_INFO.iter().map(|field| {
             let name = field.name();
 
-            let display = field
-                .get_attribute::<AppSettingsLabel>()
-                .expect("label should be set");
-            let description = field.get_attribute::<AppSettingsDescription>();
-            let label = tooltip(
-                row![text(display.0).align_y(Vertical::Center).height(Fill),]
-                    .push(description.is_some().then_some(text("?").size(12))),
-                match description {
-                    Some(description) => container(text(description.0))
-                        .style(container::rounded_box)
-                        .padding(16),
-                    None => container(""),
-                },
-                tooltip::Position::Bottom,
-            )
-            .into();
+            let label = app_field_label(field);
+
             let can_edit = !(cfg!(feature = "flatpak")
                 && field.get_attribute::<AppSettingsFlatpakLocked>().is_some());
 
             let editor = match field
                 .get_attribute::<AppSettingEditor>()
-                .map(AppSettingEditor::to_owned)
                 .unwrap_or_else(|| {
                     AppSettingEditor::get_default_for(
                         field
@@ -3025,66 +3640,42 @@ impl App {
                             .expect("field should not be a dynamic type"),
                     )
                 }) {
-                AppSettingEditor::StringInput => text_input(
-                    AppSettings::default()
-                        .get_field::<String>(name)
-                        .expect("fields should have a default value"),
-                    settings
-                        .get_field::<String>(name)
-                        .expect("string input should only be set for string values"),
-                )
-                .width(600)
-                .on_input_maybe(can_edit.then_some(|new| AppSettingEdit::String(name, new).into()))
-                .into(),
-                AppSettingEditor::SecretInput => text_input(
-                    "unset",
-                    settings
-                        .get_field::<String>(name)
-                        .expect("secret input should only be set for string values"),
-                )
-                .secure(true)
-                .width(600)
-                .on_input_maybe(can_edit.then_some(|new| AppSettingEdit::Secret(name, new).into()))
-                .into(),
-                AppSettingEditor::BoolToggle => container(
-                    widget::toggler(
-                        *settings
-                            .get_field::<bool>(name)
-                            .expect("bool toggle should only be set for bool values"),
-                    )
-                    .on_toggle_maybe(
-                        can_edit.then_some(|toggled| AppSettingEdit::Bool(name, toggled).into()),
+                editor @ (AppSettingEditor::StringInput
+                | AppSettingEditor::SecretInput
+                | AppSettingEditor::StringPick(_)) => container(
+                    editor.render(
+                        field,
+                        name,
+                        settings
+                            .get_field(name)
+                            .expect("field should contain a string value"),
+                        can_edit,
+                        AppSettingEdit::String,
                     ),
                 )
-                .center_y(Fill)
+                .width(600)
                 .into(),
-                AppSettingEditor::NumberInput => {
-                    let value = settings
+                editor @ AppSettingEditor::BoolToggle => editor.render(
+                    field,
+                    name,
+                    settings
+                        .get_field::<bool>(name)
+                        .expect("field should contain a boolean"),
+                    can_edit,
+                    AppSettingEdit::Bool,
+                ),
+                editor @ AppSettingEditor::NumberInput(_) => editor.render(
+                    field,
+                    name,
+                    settings
                         .get_field::<u32>(name)
-                        .expect("number input should only be set for u32 values");
-                    let bounds = field
-                        .get_attribute::<AppSettingsUnsignedRange>()
-                        .cloned()
-                        .unwrap_or_default()
-                        .apply(|range| range.min..=range.max);
-
-                    let editor = iced_aw::number_input(value, bounds, |_| Message::None)
-                        .on_input_maybe(
-                            can_edit.then_some(|new| AppSettingEdit::Number(name, new).into()),
-                        )
-                        .width(200);
-
-                    if field.get_attribute::<AppSettingsTimePreview>().is_some() {
-                        let preview =
-                            humantime::format_duration(Duration::from_secs(*value as u64));
-                        row![text!("({preview}) ").height(Fill).center(), editor,].into()
-                    } else {
-                        editor.into()
-                    }
-                }
+                        .expect("field should be a u32"),
+                    can_edit,
+                    AppSettingEdit::Number,
+                ),
             };
 
-            row([label, horizontal_space().into(), editor])
+            row([label.into(), horizontal_space().into(), editor])
                 .height(32)
                 .into()
         }))
@@ -3107,17 +3698,18 @@ impl App {
         )
         .push(button("Add Directory").on_press(SettingsMessage::AddModDirectory.into()));
 
-        let col = col.push(vertical_space());
-        col.push(row![
+        let scroll = scrollable(col.padding(16)).height(Fill);
+
+        let bottom = row![
             horizontal_space(),
             button("Reset to Default").on_press(SettingsMessage::ResetToDefault.into()),
             button("Reset to Saved").on_press(SettingsMessage::ResetToSaved.into()),
             button("Save").on_press_maybe(
                 (self.settings != self.settings_editing).then_some(SettingsMessage::Save.into())
             )
-        ])
-        .padding(16)
-        .into()
+        ];
+
+        column![scroll, bottom].into()
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -3156,6 +3748,22 @@ impl App {
                         }
                         AppModal::LibraryDeleteRequest => self.library_delete_request_modal(),
                         AppModal::ProfileAddRequest => self.profile_add_modal(),
+                        AppModal::ProfileDetails(name) => {
+                            container(container(column![
+                                row![container(text("Profile Details").size(24)).padding(4), horizontal_space(), button("X").style(button::danger).on_press_with(|| {
+                                    if let Some(profile) = self.profiles.get(name) && profile.settings != profile.settings_editing {
+                                        Message::display_error("Unsaved Changes", "This profile has unsaved changes!")
+                                    } else {
+                                        Message::CloseModal
+                                    }
+                                })],
+                                if let Some(profile) = self.profiles.get(name) {
+                                    profile.view_details(&self.library, &self.file_cache)
+                                } else {
+                                    text("Non-existent profile...?").into()
+                                }
+                            ]).style(container::rounded_box).height(Fill).width(Fill)).padding(16).into()
+                        }
                         AppModal::AddToProfileRequest(ids) => self.add_to_profile_modal(ids),
                         AppModal::ItemDetailedView(id) => self.view_item_detailed(id),
                         AppModal::CollectionDetailedView(source) => self.collections.view_collection_detailed(self, source),
@@ -3200,11 +3808,7 @@ impl App {
                     combo_box(
                         &self.active_profile_combo,
                         "Select Profile...",
-                        self.save.active_profile.and_then(|id| self
-                            .save
-                            .profiles
-                            .iter()
-                            .find_map(|(i, p)| (*i == id).then_some(&p.name))),
+                        self.save.active_profile.as_ref(),
                         Message::ActiveProfileSelected,
                     )
                 ),
@@ -3280,8 +3884,8 @@ impl App {
                     .push(button("Add +").on_press(Message::LoadAddLaunchArgs))
                 ),
                 row![
-                    button("Build").on_press(Message::LoadPrepareProfile(true)),
-                    button("Launch").on_press(Message::LoadLaunchGame),
+                    button("Apply").on_press_maybe(self.save.active_profile.is_some().then_some(Message::LoadPrepareProfile(true))),
+                    button("Launch").on_press_maybe(self.save.active_profile.is_some().then_some(Message::LoadLaunchGame)),
                 ].spacing(8),
             ]
             .padding(16),
@@ -3393,48 +3997,6 @@ impl App {
         .width(Fill)
         .height(Fill)
         .into()
-    }
-
-    fn profiles_page(&self) -> Element<'_, Message> {
-        macro_rules! sel_button {
-            ($inner:expr) => {
-                button(text($inner).height(Fill).width(Fill).size(14)).height(30)
-            };
-        }
-
-        let mut select_col = iced_aw::grid![].column_width(Fill).width(256);
-
-        select_col = select_col.extend(self.save.profiles.values().map(|profile| {
-            let style = if self.selected_profile_id.is_some_and(|id| id == profile.id) {
-                button::secondary
-            } else {
-                button::primary
-            };
-
-            iced_aw::grid_row![
-                sel_button!(profile.name.as_str())
-                    .style(style)
-                    .on_press(Message::ProfileSelected(profile.id))
-            ]
-        }));
-
-        select_col = select_col.push(iced_aw::grid_row![
-            sel_button!("Add Profile +").on_press(Message::ProfileAddPressed)
-        ]);
-
-        let profile_col = if let Some(id) = self.selected_profile_id
-            && let Some(profile) = self.save.profiles.get(&id)
-        {
-            // container(column![text(profile.name.as_str()).size(32)])
-            container(self.view_profile(profile))
-        } else {
-            container("No Profile Selected...")
-        };
-
-        row![select_col, profile_col]
-            .height(Fill)
-            .width(Fill)
-            .into()
     }
 
     fn steamcmd_page(&self) -> Element<'_, Message> {
@@ -3549,6 +4111,12 @@ impl App {
     }
 
     fn downloads_page(&self) -> Element<'_, Message> {
+        macro_rules! view_details {
+            ($id:expr) => {
+                button("View Details").on_press(Message::SetViewingItem(ModId::Workshop($id)))
+            };
+        }
+
         let get_details = |(id, size): (&u32, &u64)| -> Element<'_, Message> {
             let cancel = self
                 .download_queue
@@ -3586,17 +4154,16 @@ impl App {
                     ]
                     .width(Fill),
                 ]
-                .push(cancel)
-                .into()
             } else {
                 let displayed_size = files::SizeDisplay::automatic(*size);
                 row![
                     text!("Unknown ({id}) - {displayed_size}"),
                     horizontal_space(),
                 ]
-                .push(cancel)
-                .into()
             }
+            .push(column![vertical_space(), view_details!(*id)].height(50))
+            .push(cancel)
+            .into()
         };
 
         let mut col = column(None).spacing(8);
@@ -3648,6 +4215,7 @@ impl App {
                         row![
                             text(info).shaping(text::Shaping::Advanced),
                             horizontal_space(),
+                            view_details!(*id),
                             button("Clear")
                                 .on_press(Message::SteamCMDDownloadCompletedClear(vec![*id])),
                         ]
@@ -3681,6 +4249,10 @@ impl App {
                         text!("Last Updated - {formatted}")
                     ],
                     horizontal_space(),
+                    button("View Change Notes").on_press_with(move || web::open_browser(format!(
+                        "https://steamcommunity.com/sharedfiles/filedetails/changelog/{id}"
+                    ))),
+                    view_details!(id),
                     button("Download").on_press(Message::DownloadPushPending(vec![id]))
                 ]
                 .into()
@@ -3709,6 +4281,7 @@ impl App {
                     row![
                         text(info),
                         horizontal_space(),
+                        view_details!(*id),
                         button("Retry").on_press(Message::SteamCMDDownloadRequested(*id)),
                         button("Clear").on_press(Message::SteamCMDDownloadErrorClear(vec![*id])),
                     ]
@@ -3721,7 +4294,7 @@ impl App {
             col = col.push(text("No ongoing downloads..."))
         }
 
-        scrollable(col).into()
+        scrollable(col).height(Fill).into()
     }
 
     fn game_logs_page(&self) -> Element<'_, Message> {
@@ -3808,10 +4381,7 @@ impl App {
         let grid = iced_aw::grid![iced_aw::grid_row![
             checkbox(
                 "",
-                self.save
-                    .profiles
-                    .values()
-                    .all(|profile| profile.add_selected)
+                self.profiles.values().all(|profile| profile.add_selected)
             )
             .on_toggle(Message::LibraryAddToProfileToggleAll),
             text("Name")
@@ -3820,10 +4390,11 @@ impl App {
 
         iced_aw::card(
             "Add to Profile",
-            scrollable(grid.extend(self.save.profiles.iter().map(|(id, profile)| {
+            scrollable(grid.extend(self.profiles.iter().map(|(name, profile)| {
                 iced_aw::grid_row![
-                    checkbox("", profile.add_selected)
-                        .on_toggle(|toggle| Message::LibraryAddToProfileToggled(*id, toggle)),
+                    checkbox("", profile.add_selected).on_toggle(|toggle| {
+                        Message::LibraryAddToProfileToggled(name.clone(), toggle)
+                    }),
                     text(profile.name.as_str())
                 ]
             }))),
@@ -3965,15 +4536,6 @@ impl App {
                                         if is_workshop
                                             && *file_name != *data.published_file_id.to_string()
                                         {
-                                            eprintln!(
-                                                "Found a mod that has mismatched IDs: {} ({}, expected {})",
-                                                data.title,
-                                                data.published_file_id,
-                                                file_name.display()
-                                            );
-                                            eprintln!(
-                                                "For now, we trust the file name over the reported ID."
-                                            );
                                             data.published_file_id = file_name.to_string_lossy().parse::<u32>()
                                                 .expect("steam workshop items should be contained in a folder named by its ID");
                                         }
@@ -4079,7 +4641,7 @@ impl App {
 
         self.library
             .update_missing_dependencies(self.file_cache.clone());
-        for profile in self.save.profiles.values_mut() {
+        for profile in self.profiles.values_mut() {
             profile.update_compatibility_issues(self.file_cache.clone(), &self.library);
         }
     }
@@ -4170,6 +4732,120 @@ impl App {
         } else {
             Task::none()
         }
+    }
+
+    fn trim_snapshots(&self) {
+        for (profile_name, profile) in self.profiles.iter() {
+            // TODO: Implement incremental snapshot rebasing, *for now* size is unbounded for incremental snapshots
+            if profile.settings.automatic_snapshot_strategy
+                == library::snapshot_strategy::INCREMENTAL
+            {
+                continue;
+            }
+
+            if profile.settings.automatic_snapshot_number_limit == 0
+                && profile.settings.automatic_snapshot_size_limit == 0
+            {
+                continue;
+            }
+
+            let profile_name = profile_name.to_owned();
+            let number_limit = profile
+                .settings
+                .automatic_snapshot_number_limit
+                .apply(|n| if n == 0 { usize::MAX } else { n as usize });
+            let size_limit = profile
+                .settings
+                .automatic_snapshot_size_limit
+                .apply(|n| if n == 0 { u64::MAX } else { n as u64 });
+            std::thread::spawn(move || {
+                let result: std::io::Result<()> = try {
+                    let mut paths = Vec::with_capacity(number_limit + 1);
+                    let mut sizes = Vec::with_capacity(paths.capacity());
+                    for entry in std::fs::read_dir(snapshot::AUTOMATIC_SNAPSHOTS_DIR.as_path())? {
+                        let entry = entry?;
+                        let path = entry.path();
+                        let Some(name) = path
+                            .file_name()
+                            .expect("path should not end with ..")
+                            .to_str()
+                        else {
+                            // Any automatic snapshots created specifically by LXCOMM should be valid UTF-8
+                            continue;
+                        };
+                        let Some((prefix, suffix)) = name.split_once(&profile_name) else {
+                            continue;
+                        };
+                        if prefix != "LXCOMM_AUTO_BASIC_"
+                            || chrono::NaiveDateTime::parse_from_str(
+                                suffix,
+                                "_%Y.%m.%d_%Hh%Mm%Ss.zip",
+                            )
+                            .is_err()
+                        {
+                            continue;
+                        }
+                        let metadata = entry.metadata()?;
+                        paths.push(path);
+                        sizes.push(metadata.len());
+                    }
+                    let mut current_size = sizes.iter().sum::<u64>();
+                    let mut indices = Vec::from_iter(0..paths.len());
+                    indices.reverse();
+                    while (current_size > size_limit || indices.len() > number_limit)
+                        && let Some(i) = indices.pop()
+                    {
+                        std::fs::remove_file(&paths[i])?;
+                        current_size -= sizes[i];
+                    }
+                };
+                if let Err(err) = result {
+                    eprintln!("Error trimming snapshots: {err:?}");
+                }
+            });
+        }
+    }
+
+    fn trim_image_cache(&self) {
+        // TODO: Make limit customizable
+        const SIZE_LIMIT: u64 = files::GIGA;
+        std::thread::spawn(|| -> std::io::Result<()> {
+            struct ImageInfo {
+                path: PathBuf,
+                size: u64,
+                accessed: std::time::SystemTime,
+            }
+            let mut images = Vec::new();
+            let mut current_size = 0;
+            for entry in std::fs::read_dir(web::IMAGE_DIR.as_path())? {
+                let entry = entry?;
+                let metadata = entry.metadata()?;
+                if !metadata.is_file() {
+                    continue;
+                }
+                current_size += metadata.len();
+                images.push(ImageInfo {
+                    path: entry.path(),
+                    size: metadata.len(),
+                    accessed: metadata.accessed()?,
+                });
+            }
+            if current_size < SIZE_LIMIT {
+                return Ok(());
+            }
+
+            images.sort_by(|a, b| a.accessed.cmp(&b.accessed));
+
+            for ImageInfo { path, size, .. } in images {
+                if current_size < SIZE_LIMIT {
+                    break;
+                }
+                std::fs::remove_file(path)?;
+                current_size -= size;
+            }
+
+            Ok(())
+        });
     }
 }
 

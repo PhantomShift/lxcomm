@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 
+use itertools::Itertools;
 use steam_rs;
 
 use crate::{files, xcom_mod};
@@ -64,7 +65,8 @@ where
         let mut indices = self
             .as_ref()
             .char_indices()
-            .map_windows(move |[(_li, lc), (ri, rc)]| (*ri, predicate(*lc, *rc)));
+            .tuple_windows()
+            .map(move |((_li, lc), (ri, rc))| (ri, predicate(lc, rc)));
 
         std::iter::from_fn(move || {
             if last_index >= self.as_ref().len() {

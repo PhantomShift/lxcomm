@@ -9,6 +9,7 @@ use iced::{
         text_input, toggler,
     },
 };
+use secrecy::ExposeSecret;
 use strum::VariantArray;
 
 use crate::{
@@ -203,6 +204,10 @@ impl WorkshopBrowser for App {
                 .height(300),
             text(&file.title),
             text(&file.published_file_id),
+            text(web::get_user_display_name(
+                steam_rs::Steam::new(self.api_key.expose_secret()),
+                file.creator.0
+            )),
             text!("{:.2} out of 10", file.get_score() * 10.0),
             button(text("View").align_x(Center))
                 .width(Fill)
