@@ -29,9 +29,9 @@ use crate::{
     xcom_mod::{self, ModId},
 };
 
-const KILO: u64 = 1024;
-const MEGA: u64 = 1024 * 1024;
-const GIGA: u64 = 1024 * 1024 * 1024;
+pub const KILO: u64 = 1024;
+pub const MEGA: u64 = 1024 * 1024;
+pub const GIGA: u64 = 1024 * 1024 * 1024;
 
 static ITEM_FILE_DETAILS_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
     let path = DATA_DIR.join("file_details");

@@ -91,12 +91,14 @@ In order of "whenever the hell it pops up in my head":
 - [x] Recurse full mod dependency tree when checking for missing dependencies
 - [x] Support manually downloaded mods
 - [x] Support workshop collections
-- [ ] Copying/importing+exporting profiles
+- [x] Copying/importing+exporting profiles (Facilitated via snapshots)
 - [ ] Disk cache trimming
 - [x] ~~Ability to enter workshop ID directly for browsing or downloading (due to unreliable browsing results)~~ Search results should now be all-inclusive
 - [ ] Investigate controller navigation in iced (or libcosmic) (for the Steam Deck gamers)
 - [x] Make profile page widgets resizable
-- [ ] Add option to create profile snapshots when applying and/or launching via LXCOMM
+- [x] Add option to create profile snapshots when applying and/or launching via LXCOMM
+- [ ] Display Workshop content author information
+- [ ] Facilitate resolution of missing local mods (e.g. recovering a snapshot from a different computer with different file paths) (*probably* needs another breaking change)
 
 ## License
 

@@ -22,6 +22,11 @@ pub static SNAPSHOTS_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
     std::fs::create_dir_all(&dir).expect("data directory should be writable");
     dir
 });
+pub static AUTOMATIC_SNAPSHOTS_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
+    let dir = SNAPSHOTS_DIR.join("automatic");
+    std::fs::create_dir_all(&dir).expect("data directory should be writable");
+    dir
+});
 
 const COMPRESSION_METHOD: zip::CompressionMethod = zip::CompressionMethod::ZSTD;
 static ZIP_OPTIONS: LazyLock<zip::write::SimpleFileOptions> = LazyLock::new(|| {
@@ -33,6 +38,16 @@ pub enum SnapshotType {
     Basic,
     Incremental,
     Invalid,
+}
+
+impl From<&str> for SnapshotType {
+    fn from(value: &str) -> Self {
+        match value {
+            "Basic" => Self::Basic,
+            "Incremental" => Self::Incremental,
+            _ => Self::Invalid,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -154,9 +169,10 @@ impl BasicSnapshotBuilder {
 
         let dest_file = File::create_new(destination)?;
         let mut writer = ZipWriter::new(dest_file);
-        writer.set_comment(serde_json::to_string(&SnapshotMetadata::new(
-            SnapshotType::Basic,
-        ))?);
+        writer.set_comment(serde_json::to_string(&SnapshotMetadata {
+            comment: self.comment.clone(),
+            ..SnapshotMetadata::new(SnapshotType::Basic)
+        })?);
 
         archive_write_dir(&mut writer, "", &root, ignored)?;
 
@@ -212,23 +228,32 @@ impl IncrementalSnapshotBuilder {
 
         let rename = read_os_str(self.root.file_name().expect("file name should not be .."))?;
         let hash = files::gen_hash(self.root.as_os_str().as_encoded_bytes());
-        let working_dir = CACHE_DIR.join(format!("LXCOMM_TEMP_{hash}"));
+        let working_dir = CACHE_DIR.join(format!("LXCOMM_TEMP_EXTEND_INCR_{hash}"));
+        if !working_dir.try_exists()? {
+            std::fs::create_dir_all(&working_dir)?;
+        }
 
         load_incremental_snapshot(rename.clone(), &working_dir, archive, None)?;
 
         let timestamp = chrono::Utc::now().timestamp();
-        let ops = generate_ops_dir(&self.root, &working_dir.join(&rename))?;
+        let ops = generate_ops_dir(&working_dir.join(&rename), &self.root)?;
         let existing = File::options()
             .read(true)
             .write(true)
             .open(&self.destination)?;
         let mut archive = ZipWriter::new_append(existing)?;
-        archive.start_file(timestamp.to_string(), *ZIP_OPTIONS)?;
-        for op in ops {
-            encode_op(&op, &mut archive)?;
+        archive.set_comment(serde_json::to_string(&metadata)?);
+
+        if !ops.is_empty() {
+            archive.start_file(timestamp.to_string(), *ZIP_OPTIONS)?;
+            for op in ops {
+                encode_op(&op, &mut archive)?;
+            }
         }
 
         archive.finish()?;
+
+        std::fs::remove_dir_all(working_dir)?;
 
         Ok(dest_name)
     }
@@ -243,9 +268,10 @@ impl IncrementalSnapshotBuilder {
 
         let writer = File::create_new(&self.destination)?;
         let mut archive = ZipWriter::new(writer);
-        archive.set_comment(serde_json::to_string(&SnapshotMetadata::new(
-            SnapshotType::Incremental,
-        ))?);
+        archive.set_comment(serde_json::to_string(&SnapshotMetadata {
+            comment: self.comment.clone(),
+            ..SnapshotMetadata::new(SnapshotType::Incremental)
+        })?);
 
         archive_write_dir(&mut archive, "root", &root, &self.ignored)?;
 
@@ -921,9 +947,7 @@ pub fn load_basic_snapshot(
         std::fs::remove_dir_all(&temp_dir)?;
     }
     archive.extract(&temp_dir)?;
-    println!("Archive extracted...");
     let profile_raw = std::fs::read_to_string(temp_dir.join(library::PROFILE_DATA_NAME))?;
-    println!("Successfully read profile...");
     let mut profile: library::Profile = serde_json::from_str(&profile_raw)?;
     profile.name = rename.clone();
 
@@ -956,7 +980,7 @@ pub fn load_incremental_snapshot(
     let hash = files::gen_hash(destination.as_os_str().as_encoded_bytes());
     let working_directory = CACHE_DIR.join(format!("LXCOMM_TEMP_{hash}"));
     if working_directory.try_exists()? {
-        std::fs::remove_dir(&working_directory)?;
+        std::fs::remove_dir_all(&working_directory)?;
     }
 
     let timestamps = list_incremental_snapshots(&mut archive)?;
@@ -977,8 +1001,13 @@ pub fn load_incremental_snapshot(
         apply_ops(&root_dir, &ops, &mut cache)?;
     }
 
-    let profile: library::Profile =
+    let mut profile: library::Profile =
         serde_json::from_slice(&std::fs::read(root_dir.join(library::PROFILE_DATA_NAME))?)?;
+    profile.name = rename.clone();
+    std::fs::write(
+        root_dir.join(library::PROFILE_DATA_NAME),
+        serde_json::to_string_pretty(&profile)?,
+    )?;
 
     if destination.try_exists()? {
         std::fs::remove_dir_all(&destination)?;

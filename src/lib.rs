@@ -216,6 +216,7 @@ pub enum Message {
 
     Collections(CollectionsMessage),
     Settings(SettingsMessage),
+    ProfileSettings(String, library::ProfileSettingsMessage),
     ModEditor(EditorMessage),
 
     LibraryToggleItem(ModId, bool),
@@ -252,7 +253,6 @@ pub enum Message {
     ProfileImportBasicSnapshot(String, Arc<ZipArchive<std::fs::File>>),
     ProfileImportIncrementalSnapshot(String, Arc<ZipArchive<std::fs::File>>),
     ProfileImportSnapshotCompleted(library::Profile),
-    ProfileGenerateAutomaticSnapshot(String, snapshot::SnapshotType),
     ActiveProfileSelected(String),
 
     LoadPrepareProfile(bool),
@@ -412,7 +412,7 @@ impl AppModal {
             LibraryDeleteRequest => true,
             SteamGuardCodeRequest => false,
             ProfileAddRequest => true,
-            ProfileDetails(_) => true,
+            ProfileDetails(_) => false,
             ItemDetailedView(_) => true,
             CollectionDetailedView(_) => true,
             Busy => false,
@@ -547,29 +547,31 @@ enum AppSettingEditor {
 }
 
 trait AppSettingsEditorTrait<T> {
-    fn render<'a, M>(
+    fn render<'a, M, F>(
         &'a self,
         field: &'a NamedField,
         name: &'static str,
         current: &'a T,
         can_edit: bool,
-        on_update: fn(&'static str, T) -> M,
+        on_update: F,
     ) -> Element<'a, Message>
     where
-        M: Into<Message> + 'static;
+        M: Into<Message> + 'static,
+        F: Fn(&'static str, T) -> M + 'a;
 }
 
 impl AppSettingsEditorTrait<String> for AppSettingEditor {
-    fn render<'a, M>(
+    fn render<'a, M, F>(
         &'a self,
         _field: &'a NamedField,
         name: &'static str,
         current: &'a String,
         can_edit: bool,
-        on_update: fn(&'static str, String) -> M,
+        on_update: F,
     ) -> Element<'a, Message>
     where
         M: Into<Message> + 'static,
+        F: Fn(&'static str, String) -> M + 'a,
     {
         match self {
             AppSettingEditor::SecretInput | AppSettingEditor::StringInput => {
@@ -594,16 +596,17 @@ impl AppSettingsEditorTrait<String> for AppSettingEditor {
 }
 
 impl AppSettingsEditorTrait<bool> for AppSettingEditor {
-    fn render<'a, M>(
+    fn render<'a, M, F>(
         &'a self,
         _field: &'a NamedField,
         name: &'static str,
         current: &'a bool,
         can_edit: bool,
-        on_update: fn(&'static str, bool) -> M,
+        on_update: F,
     ) -> Element<'a, Message>
     where
         M: Into<Message> + 'static,
+        F: Fn(&'static str, bool) -> M + 'a,
     {
         match self {
             AppSettingEditor::BoolToggle => container(widget::toggler(*current).on_toggle_maybe(
@@ -617,16 +620,17 @@ impl AppSettingsEditorTrait<bool> for AppSettingEditor {
 }
 
 impl AppSettingsEditorTrait<u32> for AppSettingEditor {
-    fn render<'a, M>(
+    fn render<'a, M, F>(
         &'a self,
         field: &'a NamedField,
         name: &'static str,
         current: &'a u32,
         can_edit: bool,
-        on_update: fn(&'static str, u32) -> M,
+        on_update: F,
     ) -> Element<'a, Message>
     where
         M: Into<Message> + 'static,
+        F: Fn(&'static str, u32) -> M + 'a,
     {
         match self {
             AppSettingEditor::NumberInput(range) => {
@@ -950,7 +954,10 @@ impl App {
 
         let profiles = BTreeMap::from_iter(save.tracked_profiles.iter().filter_map(|tracked| {
             match library::Profile::load_state(&PROFILES_DIR, tracked) {
-                Ok(profile) => Some((profile.name.clone(), profile)),
+                Ok(mut profile) => {
+                    profile.settings_editing = profile.settings.clone();
+                    Some((profile.name.clone(), profile))
+                }
                 Err(err) => {
                     reportable_errors.push(
                         eyre::Error::new(err)
@@ -1105,6 +1112,11 @@ impl App {
             // TODO - Figure out a good way to decouple this
             Message::Collections(message) => return self.update_collections(message),
             Message::Settings(message) => return self.update_settings(message),
+            Message::ProfileSettings(name, message) => {
+                if let Some(profile) = self.profiles.get_mut(&name) {
+                    return profile.handle_settings_update(message);
+                }
+            }
             Message::ModEditor(message) => {
                 if let Some(task) = self.mod_editor.update(message) {
                     return task;
@@ -2610,17 +2622,24 @@ impl App {
 
                 return Task::future(async move {
                     let stop_at = if let Some(mut receiver) = receiver {
-                        receiver.next().await.flatten().and_then(|response| {
-                            response
-                                .get_string_enum("Timestamp")
-                                .and_then(|formatted| {
-                                    chrono::DateTime::parse_from_str(formatted, "%c").ok()
-                                })
-                                .map(|dt| dt.timestamp())
-                        })
+                        let Some(response) = receiver.next().await.flatten() else {
+                            return Message::None;
+                        };
+                        response
+                            .get_string_enum("Timestamp")
+                            .and_then(|formatted| {
+                                chrono::NaiveDateTime::parse_from_str(formatted, "%c").ok()
+                            })
+                            .and_then(|dt| {
+                                dt.and_local_timezone(chrono::Local)
+                                    .single()
+                                    .map(|dt| dt.timestamp())
+                            })
                     } else {
                         None
                     };
+
+                    dbg!(stop_at);
 
                     match tokio::task::spawn_blocking(move || {
                         snapshot::load_incremental_snapshot(
@@ -2645,11 +2664,11 @@ impl App {
                 })
                 .chain(Task::done(Message::SetBusy(false)));
             }
-            Message::ProfileImportSnapshotCompleted(profile) => {
+            Message::ProfileImportSnapshotCompleted(mut profile) => {
+                profile.settings_editing = profile.settings.clone();
                 self.save.tracked_profiles.insert(profile.name());
                 self.profiles.insert(profile.name(), profile);
             }
-            Message::ProfileGenerateAutomaticSnapshot(name, snapshot_type) => todo!(),
             Message::ActiveProfileSelected(name) => {
                 if self.profiles.contains_key(&name) {
                     self.save.active_profile = Some(name);
@@ -2702,11 +2721,36 @@ impl App {
                             format!("{err:#?}"),
                         ));
                     } else if manual {
-                        // TODO - More generic dialog name, just using error for now
-                        return Task::done(Message::display_error(
-                            "Success",
-                            "Config was successfully applied.",
-                        ));
+                        return if profile.settings.automatic_snapshot_on_apply {
+                            Task::done(Message::SetBusyMessage(
+                                "Generating Automatic Snapshot...".to_string(),
+                            ))
+                            .chain(Task::perform(
+                                profile.generate_automatic_snapshot(),
+                                |res| {
+                                    if let Err(err) = res {
+                                        let err = eyre::Error::new(err)
+                                            .wrap_err("Failed to create an automatic snapshot.");
+                                        Message::display_error(
+                                            "Error Generating Snapshot",
+                                            format!("{err:?}"),
+                                        )
+                                    } else {
+                                        Message::display_error(
+                                            "Success",
+                                            "Config was successfully applied.",
+                                        )
+                                    }
+                                },
+                            ))
+                            .chain(Task::done(Message::SetBusy(false)))
+                        } else {
+                            // TODO - More generic dialog name, just using error for now
+                            Task::done(Message::display_error(
+                                "Success",
+                                "Config was successfully applied.",
+                            ))
+                        };
                     }
                 }
             }
@@ -2775,19 +2819,42 @@ impl App {
                     }
 
                     let args = self.save.launch_args.clone();
-                    let busy = Task::done(Message::SetBusy(true));
-                    busy.chain(Task::future(async move {
-                        let mut command = std::process::Command::new(command);
-                        command.stdout(Stdio::null());
 
-                        for (l, r) in args {
-                            if !l.is_empty() {
-                                command.arg(l);
+                    let generate = self
+                        .save
+                        .active_profile
+                        .as_ref()
+                        .and_then(|name| self.profiles.get(name))
+                        .filter(|profile| profile.settings.automatic_snapshot_on_launch)
+                        .map(|profile| profile.generate_automatic_snapshot());
+
+                    let _ = if generate.is_some() {
+                        self.update(Message::SetBusyMessage(
+                            "Generating Automatic Snapshot...".to_string(),
+                        ))
+                    } else {
+                        self.update(Message::SetBusy(true))
+                    };
+
+                    Task::future(async move {
+                        let io_result: std::io::Result<()> = try {
+                            if let Some(generate) = generate {
+                                generate.await?;
                             }
-                            command.arg(r);
-                        }
 
-                        if let Err(err) = command.spawn() {
+                            let mut command = std::process::Command::new(command);
+                            command.stdout(Stdio::null());
+
+                            for (l, r) in args {
+                                if !l.is_empty() {
+                                    command.arg(l);
+                                }
+                                command.arg(r);
+                            }
+                            command.spawn()?;
+                        };
+
+                        if let Err(err) = io_result {
                             Message::Chained(vec![
                                 Message::SetBusy(false),
                                 Message::display_error(
@@ -2799,7 +2866,7 @@ impl App {
                             tokio::time::sleep(Duration::from_secs(5)).await;
                             Message::SetBusy(false)
                         }
-                    }))
+                    })
                     .chain(self.setup_launch_log_monitor())
                 } else {
                     Task::done(Message::DisplayError(
@@ -3674,7 +3741,13 @@ impl App {
                         AppModal::ProfileAddRequest => self.profile_add_modal(),
                         AppModal::ProfileDetails(name) => {
                             container(container(column![
-                                row![container(text("Profile Details").size(24)).padding(4), horizontal_space(), button("X").style(button::danger).on_press(Message::CloseModal)],
+                                row![container(text("Profile Details").size(24)).padding(4), horizontal_space(), button("X").style(button::danger).on_press_with(|| {
+                                    if let Some(profile) = self.profiles.get(name) && profile.settings != profile.settings_editing {
+                                        Message::display_error("Unsaved Changes", "This profile has unsaved changes!")
+                                    } else {
+                                        Message::CloseModal
+                                    }
+                                })],
                                 if let Some(profile) = self.profiles.get(name) {
                                     profile.view_details(&self.library, &self.file_cache)
                                 } else {
