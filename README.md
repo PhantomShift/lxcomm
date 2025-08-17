@@ -97,7 +97,7 @@ In order of "whenever the hell it pops up in my head":
 - [ ] Investigate controller navigation in iced (or libcosmic) (for the Steam Deck gamers)
 - [x] Make profile page widgets resizable
 - [x] Add option to create profile snapshots when applying and/or launching via LXCOMM
-- [ ] Display Workshop content author information
+- [x] Display Workshop content author information
 - [ ] Facilitate resolution of missing local mods (e.g. recovering a snapshot from a different computer with different file paths) (*probably* needs another breaking change)
 
 ## License
