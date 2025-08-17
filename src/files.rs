@@ -264,9 +264,9 @@ impl ModDetails {
         }
     }
 
-    pub fn maybe_workshop(self) -> Option<Arc<query_files::File>> {
+    pub fn maybe_workshop(&self) -> Option<Arc<query_files::File>> {
         match self {
-            Self::Workshop(details) => Some(details),
+            Self::Workshop(details) => Some(details.to_owned()),
             Self::Local(_) => None,
         }
     }

@@ -3485,6 +3485,11 @@ impl App {
                     .padding(16),
                     column![
                         text(file.title().to_owned()).size(18),
+                        file.maybe_workshop().map(|file| {
+                            tooltip!(rich_text([text::Span::new("Author: "), text::Span::new(web::get_user_display_name(steam_rs::Steam::new(self.api_key.expose_secret()), file.creator.0)).link(file.creator.0)]).on_link_click(|id: u64| {
+                                web::open_browser(format!("https://steamcommunity.com/profiles/{id}/myworkshopfiles/?appid={XCOM_APPID}"))
+                            }), "Open in Browser")
+                        }),
                         id.maybe_workshop().map(|id| {
                             tooltip!(
                                 rich_text([text::Span::new(id.to_string()).link(id)]).on_link_click(|id: u32| {

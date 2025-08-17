@@ -29,15 +29,23 @@ use steam_rs::{
     },
 };
 use strum::VariantArray;
+use tokio::io::AsyncWriteExt;
 
 // Cache valid for 1 day
 const DEFAULT_CACHE_TIME: u32 = 86400;
+const PROFILE_SUMMARY_CACHE_TIME: u32 = 86400 * 7;
 
 pub static IMAGE_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
     let dir = CACHE_DIR.join("images");
     std::fs::create_dir_all(&dir).expect("cache directory shouild be writable");
     dir
 });
+
+static PROFILE_SUMMARY_CACHE_DIR: LazyLock<PathBuf> =
+    LazyLock::new(|| CACHE_DIR.join("profile_summaries"));
+static PROFILE_SUMMARY_CACHE: LazyLock<
+    moka::sync::Cache<u64, Arc<steam_rs::steam_user::get_player_summaries::Player>>,
+> = LazyLock::new(|| moka::sync::Cache::new(128));
 
 pub fn image_path<S: AsRef<str>>(s: S) -> PathBuf {
     IMAGE_DIR
@@ -526,6 +534,32 @@ pub async fn query_mods(
 
     QUERY_CACHE.insert(cache_key, query.clone()).await;
 
+    // Pre-emptively resolve author information
+    // Yes it is yucky that this is a side-effect.
+    let unknown_authors = Vec::from_iter(query.published_file_details.iter().filter_map(|file| {
+        PROFILE_SUMMARY_CACHE
+            .optionally_get_with(file.creator.0, || {
+                get_user_summary_disk_cached(file.creator.0).map(Arc::new)
+            })
+            .is_none()
+            .then_some(file.creator.0.into())
+    }));
+    if !unknown_authors.is_empty()
+        && let Ok(list) = client.get_player_summaries(unknown_authors).await
+    {
+        for info in list {
+            let user_id = info.steam_id.0;
+            if let Ok(mut file) =
+                tokio::fs::File::create(PROFILE_SUMMARY_CACHE_DIR.join(format!("{user_id}.json")))
+                    .await
+                && let Ok(to_cache) = serde_json::to_vec(&info)
+            {
+                let _ = file.write_all(&to_cache).await;
+            }
+            PROFILE_SUMMARY_CACHE.insert(user_id, Arc::new(info));
+        }
+    }
+
     Ok((query, false))
 }
 
@@ -725,6 +759,58 @@ pub async fn check_mods_outdated(
     }
 
     Ok(outdated)
+}
+
+fn get_user_summary_disk_cached(
+    user_id: u64,
+) -> Option<steam_rs::steam_user::get_player_summaries::Player> {
+    if !PROFILE_SUMMARY_CACHE_DIR.exists() {
+        std::fs::create_dir_all(PROFILE_SUMMARY_CACHE_DIR.as_path()).ok()?;
+    }
+    let cached_path = PROFILE_SUMMARY_CACHE_DIR.join(format!("{user_id}.json"));
+    if let Ok(true) = cached_path.try_exists()
+        && let Ok(metadata) = cached_path.metadata()
+        && let Ok(created) = metadata.created()
+        && std::time::SystemTime::now()
+            .duration_since(created)
+            .is_ok_and(|d| d.as_secs() <= PROFILE_SUMMARY_CACHE_TIME as u64)
+        && let Ok(bytes) = std::fs::read(&cached_path)
+        && let Ok(cached) = serde_json::from_slice(&bytes)
+    {
+        Some(cached)
+    } else {
+        None
+    }
+}
+
+pub fn get_user_display_name(client: Steam, user_id: u64) -> String {
+    PROFILE_SUMMARY_CACHE
+        .optionally_get_with(user_id, move || {
+            if let Some(cached) = get_user_summary_disk_cached(user_id) {
+                return Some(Arc::new(cached));
+            }
+            let cached_path = PROFILE_SUMMARY_CACHE_DIR.join(format!("{user_id}.json"));
+
+            // Wishing there was an easier way to ensure this doesn't panic in case this gets called in an async context
+            let resolve = async move { client.get_player_summaries(vec![user_id.into()]).await };
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.block_on(resolve).ok()
+            } else {
+                tokio::runtime::Runtime::new()
+                    .map(|rt| rt.block_on(resolve).ok())
+                    .ok()
+                    .flatten()
+            }
+            .and_then(|v| v.into_iter().next())
+            .inspect(|info| {
+                if let Ok(file) = std::fs::File::create(cached_path) {
+                    let _ = serde_json::to_writer(file, info);
+                }
+            })
+            .map(Arc::new)
+        })
+        .map(|player| player.persona_name.clone())
+        .unwrap_or("UNKNOWN".to_string())
 }
 
 pub fn handle_url(url: reqwest::Url) -> Message {
