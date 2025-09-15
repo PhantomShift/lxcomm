@@ -99,6 +99,7 @@ In order of "whenever the hell it pops up in my head":
 - [x] Add option to create profile snapshots when applying and/or launching via LXCOMM
 - [x] Display Workshop content author information
 - [ ] Facilitate resolution of missing local mods (e.g. recovering a snapshot from a different computer with different file paths) (*probably* needs another breaking change)
+- [ ] Add a first-run wizard (enable/disable Steam Workshop features, login handling, link to guide, etc.)
 
 ## License
 
