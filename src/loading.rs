@@ -302,7 +302,15 @@ pub fn link_profile_local_files<L: AsRef<Path>>(
             std::fs::rename(&destination, backup)?;
         }
 
-        std::fs::remove_dir_all(&destination)?;
+        if destination.try_exists()? {
+            std::fs::remove_dir_all(&destination).map_err(|e| {
+                std::io::Error::other(format!(
+                    "Failed to remove '{}': {}",
+                    destination.display(),
+                    e
+                ))
+            })?;
+        }
 
         let source = profile_path.join(name);
         if !source.try_exists()? {
