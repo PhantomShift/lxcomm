@@ -98,7 +98,7 @@ pub fn build_mod_environment<D: AsRef<Path>>(
         let Some(data) = metadata.get(id) else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("item informatin missing for id {id}"),
+                format!("item information missing for id {id}"),
             ));
         };
 
