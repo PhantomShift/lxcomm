@@ -795,11 +795,6 @@ uncaching your login details and requiring that you log in again manually next t
     #[serde(skip)]
     #[derivative(Debug = "ignore")]
     steam_webapi_api_key: String,
-
-    #[reflect(@AppSettingsLabel("Test Pick List"))]
-    #[reflect(@AppSettingEditor::StringPick(vec!["Basic", "Incremental"]))]
-    #[serde(skip)]
-    test_pick: String,
 }
 
 static APP_SETTINGS_INFO: LazyLock<&StructInfo> = LazyLock::new(|| {
@@ -827,8 +822,6 @@ impl Default for AppSettings {
             steam_webapi_save_api_key: false,
             steam_webapi_cache_lifetime: 86400,
             steam_webapi_api_key: Default::default(),
-
-            test_pick: "Basic".to_string(),
         }
     }
 }
