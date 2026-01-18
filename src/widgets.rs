@@ -1,8 +1,8 @@
 use apply::Apply;
 use derivative::Derivative;
 use iced::widget::{
-    button, checkbox, column, container, horizontal_space, pane_grid, pick_list, row, text,
-    text_input, toggler,
+    button, checkbox, column, container, pane_grid, pick_list, row, space, text, text_input,
+    toggler,
 };
 use iced_aw::widget::labeled_frame::LabeledFrame;
 
@@ -119,7 +119,7 @@ impl AsyncDialog {
                             container(toggler(*b).on_toggle(on_update!(name, Toggle)))
                         }
                         AsyncDialogField::Checkbox(b) => {
-                            container(checkbox("", *b).on_toggle(on_update!(name, Checkbox)))
+                            container(checkbox(*b).on_toggle(on_update!(name, Checkbox)))
                         }
                         AsyncDialogField::StringEnum { current, options } => container(pick_list(
                             options.as_slice(),
@@ -143,7 +143,7 @@ impl AsyncDialog {
         .foot(row![
             button("Cancel")
                 .on_press_with(|| Message::AsyncDialogResolved(self.key.clone(), false)),
-            horizontal_space(),
+            space::horizontal(),
             button("Submit").on_press_with(|| Message::AsyncDialogResolved(self.key.clone(), true))
         ])
     }

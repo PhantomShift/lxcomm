@@ -1,6 +1,6 @@
 [package]
 name = "lxcomm"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 license = "MIT OR APACHE-2.0"
 repository = "https://github.com/phantomshift/lxcomm"
@@ -33,7 +33,7 @@ rfd = { version = "0.15.4", default-features = false, features = ["tokio", "xdg-
 ringmap = "0.1.4"
 secrecy = { version = "0.10.3", features = ["serde"] }
 serde = { version = "1.0.219", features = ["serde_derive", "rc"] }
-serde_json = "1.0.140"
+serde_json = { version = "1.0.140", features = ["std"] }
 similar = "2.7.0"
 steam-rs = "0.5.1"
 strip-ansi-escapes = "0.2.1"
@@ -60,35 +60,38 @@ indexmap = { version = "2.10.0", features = ["serde"] }
 dashmap = "6.1.0"
 serde_with = "3.14.0"
 zip = { version = "4.3.0", default-features = false, features = ["zstd"] }
+iced_fonts = { version = "0.3.0", features = ["fontawesome"] }
 
-[target.'cfg(not(target_os = "windows"))'.dependencies]
-iced_fonts = { git = "https://github.com/Redhawk18/iced_fonts.git", version = "0.2.0", features = ["fontawesome"], rev = "982eb5ac9a02629cc9af824e3816376e4f52fc03" }
+# [target.'cfg(not(target_os = "windows"))'.dependencies]
+# iced_fonts = { git = "https://github.com/Redhawk18/iced_fonts.git", version = "0.2.0", features = ["fontawesome"], rev = "982eb5ac9a02629cc9af824e3816376e4f52fc03" }
 
 
 [dependencies.iced]
-version = "0.14.0-dev"
+# version = "0.14.0-dev"
+version = "0.14.0"
 default-features = false
-features = ["wgpu", "tiny-skia", "web-colors", "auto-detect-theme", "advanced", "highlighter", "image", "lazy", "markdown", "svg", "tokio", "thread-pool"]
+features = ["wgpu", "tiny-skia", "web-colors", "linux-theme-detection", "advanced", "highlighter", "image", "lazy", "markdown", "svg", "tokio", "thread-pool", "wayland", "x11"]
 # features = ["advanced", "image", "lazy", "markdown", "svg", "tokio"]
 # git = "https://github.com/iced-rs/iced"
 
-[dependencies.iced_highlighter]
-version = "0.14.0-dev"
-default-features = false
-features = ["syntect-default-fancy"]
+# [dependencies.iced_highlighter]
+# version = "0.14.0-dev"
+# default-features = false
+# features = ["syntect-default-fancy"]
 
 [dependencies.iced_aw]
-version = "0.13.0-dev"
+# version = "0.13.0-dev"
+version = "0.13.0"
 default-features = false
-features = ["card", "grid", "labeled_frame", "number_input", "spinner", "drop_down", "badge"]
-git = "https://github.com/phantomshift/iced_aw"
-branch = "redhawk-more-highlights"
+features = ["card", "labeled_frame", "number_input", "spinner", "drop_down", "badge"]
+# git = "https://github.com/phantomshift/iced_aw"
+# branch = "redhawk-more-highlights"
 
 [patch.crates-io]
-iced = { git = "https://github.com/phantomshift/iced.git", version = "0.14.0-dev", rev = "7e8575e" }
-iced_core = { git = "https://github.com/phantomshift/iced.git", version = "0.14.0-dev", rev = "7e8575e" }
-iced_widget = { git = "https://github.com/phantomshift/iced.git", version = "0.14.0-dev", rev = "7e8575e" }
-iced_highlighter = { git = "https://github.com/phantomshift/iced.git", version = "0.14.0-dev", rev = "7e8575e" }
+# iced = { git = "https://github.com/phantomshift/iced.git", version = "0.14.0-dev", rev = "7e8575e" }
+# iced_core = { git = "https://github.com/phantomshift/iced.git", version = "0.14.0-dev", rev = "7e8575e" }
+# iced_widget = { git = "https://github.com/phantomshift/iced.git", version = "0.14.0-dev", rev = "7e8575e" }
+# iced_highlighter = { git = "https://github.com/phantomshift/iced.git", version = "0.14.0-dev", rev = "7e8575e" }
 steam-rs = { git = "https://github.com/phantomshift/steam-rs.git", branch = "get-details"}
 
 [profile.dev]

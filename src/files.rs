@@ -6,6 +6,7 @@ use std::{
 };
 
 use bstr::ByteSlice;
+use eyre::Context;
 use iced::{
     Task,
     futures::{
@@ -402,13 +403,19 @@ pub async fn watch_async<P: AsRef<Path>>(
 pub fn setup_watching(path: PathBuf) -> impl Stream<Item = Message> {
     iced::stream::channel(100, async move |mut output| {
         let result: eyre::Result<()> = try {
-            let (mut watcher, mut rx) = async_watcher()?;
+            let (mut watcher, mut rx) =
+                async_watcher().wrap_err("failed to make asynchronous watcher")?;
 
-            watcher.watch(&path, notify::RecursiveMode::NonRecursive)?;
+            watcher
+                .watch(&path, notify::RecursiveMode::NonRecursive)
+                .wrap_err("failed to start asynchronous watcher")?;
 
             while let Some(res) = rx.next().await {
                 match res {
-                    Ok(event) => output.send(Message::FileWatchEvent(event)).await?,
+                    Ok(event) => output
+                        .send(Message::FileWatchEvent(event))
+                        .await
+                        .wrap_err("file watch event error occurred")?,
                     Err(err) => eprintln!("Error occurred when watching files: {err:?}"),
                 }
             }
@@ -428,9 +435,12 @@ pub enum MonitorFileChange {
 
 pub fn monitor_file_changes(path: PathBuf) -> (Task<MonitorFileChange>, iced::task::Handle) {
     Task::stream(iced::stream::channel(16, async move |mut output| {
-        let res: eyre::Result<()> = try {
-            let (mut watcher, mut receiver) = async_watcher()?;
-            watcher.watch(&path, notify::RecursiveMode::NonRecursive)?;
+        let res: std::result::Result<(), eyre::Report> = try {
+            let (mut watcher, mut receiver) =
+                async_watcher().wrap_err("failed to create asynchronous watcher")?;
+            watcher
+                .watch(&path, notify::RecursiveMode::NonRecursive)
+                .wrap_err("failed to start asynchronous watcher")?;
 
             let mut position = 0;
             while let Some(event) = receiver.next().await {

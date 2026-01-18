@@ -9,7 +9,7 @@ use bevy_reflect::{GetField, Reflect, Typed};
 use fuse_rust::Fuse;
 use iced::{
     Task,
-    widget::{column, container, horizontal_rule, rich_text, scrollable, span, text},
+    widget::{column, container, rich_text, rule, scrollable, span, text},
 };
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -404,10 +404,10 @@ impl Profile {
                 .push(text!("Name: {name}"))
                 .push(location_text)
                 .push(text!("Total Mods: {total_mods}"))
-                .push(horizontal_rule(2))
+                .push(rule::horizontal(2))
                 .push(text("Settings").size(24))
                 .push(self.display_settings())
-                .push(horizontal_rule(2))
+                .push(rule::horizontal(2))
                 .push((!self.compatibility_issues.is_empty()).then_some(text("Problems").size(24)))
                 .push(column(self.compatibility_issues.iter().map(
                     |(id, issues)| {
@@ -634,10 +634,10 @@ impl Profile {
                 ),
             };
 
-            row![label, horizontal_space(), editor].height(32).into()
+            row![label, space::horizontal(), editor].height(32).into()
         }))
         .push(row![
-            iced::widget::horizontal_space(),
+            space::horizontal(),
             button("Reset to Default").on_press_with(
                 || self.emit_settings_message(ProfileSettingsMessage::ResetToDefault)
             ),

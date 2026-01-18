@@ -5,8 +5,8 @@ use iced::{
     Element,
     Length::Fill,
     widget::{
-        button, column, container, grid, horizontal_space, pick_list, row, scrollable, text,
-        text_input, toggler,
+        button, column, container, grid, pick_list, row, scrollable,
+        space::horizontal as horizontal_space, text, text_input, toggler,
     },
 };
 use secrecy::ExposeSecret;
@@ -23,7 +23,10 @@ macro_rules! reset_scroll {
     ($id:expr) => {{
         let op = iced::advanced::widget::operation::scrollable::scroll_to(
             $id.into(),
-            iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
+            iced::widget::scrollable::AbsoluteOffset {
+                x: Some(0.0),
+                y: Some(0.0),
+            },
         );
         iced::advanced::widget::operate(op)
     }};
@@ -39,7 +42,7 @@ pub trait WorkshopBrowser {
     fn get_max_page(&self) -> u32;
     fn get_query(&self) -> &WorkshopQuery;
     fn get_tags_toggled(&self) -> bool;
-    fn get_scroll_id(&self) -> iced::widget::scrollable::Id;
+    fn get_scroll_id(&self) -> iced::widget::Id;
 
     fn make_grid(&self) -> iced::widget::Grid<'_, Message> {
         grid::Grid::new()
@@ -165,7 +168,7 @@ impl WorkshopBrowser for App {
     fn get_tags_toggled(&self) -> bool {
         self.browse_query_tags_open
     }
-    fn get_scroll_id(&self) -> iced::widget::scrollable::Id {
+    fn get_scroll_id(&self) -> iced::widget::Id {
         self.browsing_scroll_id.clone()
     }
     fn on_page_change(&self, _state: &App, new: u32) -> Self::Message {

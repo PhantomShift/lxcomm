@@ -5,9 +5,7 @@ use iced::{
     Length::{Fill, Shrink},
     Task,
     futures::SinkExt,
-    widget::{
-        button, column, container, grid, horizontal_space, image, markdown, row, scrollable, text,
-    },
+    widget::{button, column, container, grid, image, markdown, row, scrollable, space, text},
 };
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
@@ -118,7 +116,7 @@ pub struct CollectionsState {
     web_cache: CollectionCache,
     pub loaded_web_collections: Arc<[Collection]>,
     local_collections: BTreeMap<PathBuf, Arc<Collection>>,
-    browsing_scroll_id: iced::widget::scrollable::Id,
+    browsing_scroll_id: iced::widget::Id,
     browsing_page: u32,
     browsing_page_max: u32,
     browsing_query: web::WorkshopQuery,
@@ -132,7 +130,7 @@ impl Default for CollectionsState {
             web_cache: CollectionCache::default(),
             loaded_web_collections: Arc::new([]),
             local_collections: BTreeMap::new(),
-            browsing_scroll_id: iced::widget::scrollable::Id::unique(),
+            browsing_scroll_id: iced::widget::Id::unique(),
             browsing_page: 0,
             browsing_page_max: 0,
             browsing_query: web::WorkshopQuery::default(),
@@ -158,7 +156,7 @@ impl WorkshopBrowser for CollectionsState {
     fn get_tags_toggled(&self) -> bool {
         self.browse_query_tags_open
     }
-    fn get_scroll_id(&self) -> iced::widget::scrollable::Id {
+    fn get_scroll_id(&self) -> iced::widget::Id {
         self.browsing_scroll_id.clone()
     }
     fn on_page_change(&self, _state: &App, new: u32) -> Self::Message {
@@ -260,7 +258,7 @@ impl CollectionsState {
             container(column![
                 // Fow some reason it won't render if it's at the bottom...?
                 row![
-                    horizontal_space(),
+                    space::horizontal(),
                     button("Close")
                         .style(button::danger)
                         .on_press(Message::CloseModal)

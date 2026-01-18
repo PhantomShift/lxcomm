@@ -813,7 +813,11 @@ pub fn get_user_display_name(client: Steam, user_id: u64) -> String {
         .unwrap_or("UNKNOWN".to_string())
 }
 
-pub fn handle_url(url: reqwest::Url) -> Message {
+pub fn handle_url(url: String) -> Message {
+    let Ok(url) = reqwest::Url::parse(&url) else {
+        return Message::None;
+    };
+
     if url.domain() == Some("steamcommunity.com")
         && url
             .path_segments()

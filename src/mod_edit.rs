@@ -8,9 +8,7 @@ use iced::{
     Element, Font,
     Length::Fill,
     Task,
-    widget::{
-        button, column, container, row, scrollable, text, text_editor, text_input, vertical_rule,
-    },
+    widget::{button, column, container, row, rule, scrollable, text, text_editor, text_input},
 };
 use itertools::Itertools;
 use moka::sync::Cache;
@@ -425,7 +423,7 @@ impl Editor {
                                     |action| EditorMessage::BufferEdit(name.clone(), action).into()
                                 )
                                 // Potential TODO: Add settings for theme (including application-level)
-                                .highlight("ini", iced::highlighter::Theme::Leet)
+                                .highlight("ini", iced::highlighter::Theme::SolarizedDark)
                                 .font(Font::MONOSPACE)
                                 .wrapping(text::Wrapping::WordOrGlyph)
                                 .height(Fill)
@@ -464,7 +462,7 @@ impl Editor {
             })
         });
 
-        column![row![scrollable(buttons_col).width(200), vertical_rule(2)].push(editor)]
+        column![row![scrollable(buttons_col).width(200), rule::vertical(2)].push(editor)]
             .width(Fill)
             .into()
     }

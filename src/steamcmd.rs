@@ -656,9 +656,12 @@ impl State {
 
     pub async fn download_item(&self, id: u32) -> Result<u32, Error> {
         let result: Result<u32, Error> = try {
-            std::fs::create_dir_all(&self.download_dir)?;
+            std::fs::create_dir_all(&self.download_dir).map_err(Error::IoError)?;
             let session = self.try_get_session()?;
-            session.force_install_dir(&self.download_dir).await?;
+            session
+                .force_install_dir(&self.download_dir)
+                .await
+                .map_err(Error::Session)?;
             if !session.await_input().await {
                 return Err(Error::Session(SessionError::Killed));
             }

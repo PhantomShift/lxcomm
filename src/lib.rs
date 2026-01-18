@@ -1,5 +1,4 @@
 #![feature(try_blocks)]
-#![feature(path_add_extension)]
 // For windows soft links
 #![cfg_attr(target_os = "windows", feature(junction_point))]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -20,7 +19,6 @@ use bevy_reflect::{GetField, NamedField, Reflect, StructInfo, Type, TypeInfo, Ty
 use bstr::{BString, ByteSlice};
 use derivative::Derivative;
 use etcetera::{AppStrategy, AppStrategyArgs};
-use eyre::Result;
 use iced::{
     Alignment::Center,
     Element,
@@ -32,10 +30,9 @@ use iced::{
         channel::mpsc::{Receiver, Sender},
     },
     widget::{
-        self, Stack, button, checkbox, column, combo_box, container, horizontal_rule,
-        horizontal_space, image, markdown, opaque, pane_grid, pick_list, progress_bar, rich_text,
-        row, scrollable, span, stack, text, text_editor, text_input, toggler, tooltip,
-        vertical_rule, vertical_space,
+        self, Stack, button, checkbox, column, combo_box, container, image, markdown, opaque,
+        pane_grid, pick_list, progress_bar, rich_text, row, rule, scrollable, space, span, stack,
+        table, text, text_editor, text_input, toggler, tooltip,
     },
 };
 use iced_aw::{card, widget::LabeledFrame};
@@ -53,6 +50,7 @@ use crate::{
     collections::{Collection, CollectionsMessage, CollectionsState, ImageSource},
     extensions::Truncatable,
     files::ModDetails,
+    library::LibraryItem,
     platform::symbols,
     snapshot::SnapshotContainer,
     widgets::{AsyncDialog, AsyncDialogField},
@@ -498,7 +496,7 @@ pub struct App {
     api_key: SecretString,
     current_page: AppPage,
     modal_stack: Vec<AppModal>,
-    browsing_scroll_id: iced::widget::scrollable::Id,
+    browsing_scroll_id: iced::widget::Id,
     browsing_page: u32,
     browsing_page_max: u32,
     browsing_query: web::WorkshopQuery,
@@ -857,7 +855,7 @@ impl App {
                     ))?
                 } else {
                     let file = std::fs::File::open(source)?;
-                    let data: T = serde_json::from_reader(file)?;
+                    let data: T = serde_json::from_reader(file).map_err(std::io::Error::from)?;
                     data
                 }
             };
@@ -978,10 +976,11 @@ impl App {
         });
 
         // Overwrite by default in case there were missing fields
-        let result: Result<()> = try {
+        let result: std::io::Result<()> = try {
+            // TODO: Figure out why automatic conversion of errors in try blocks suddenly isnt working
             std::fs::create_dir_all(&*CONFIG_DIR)?;
             let file = std::fs::File::create(&*SETTINGS_PATH)?;
-            serde_json::to_writer_pretty(file, &settings)?;
+            serde_json::to_writer_pretty(file, &settings).map_err(std::io::Error::from)?;
         };
         if let Err(err) = result {
             eprintln!("Failed to overwrite settings on boot: {err}");
@@ -1003,7 +1002,7 @@ impl App {
             api_key: SecretString::default(),
             current_page: Default::default(),
             modal_stack: Vec::new(),
-            browsing_scroll_id: iced::widget::scrollable::Id::unique(),
+            browsing_scroll_id: iced::widget::Id::unique(),
             browsing_page: 0,
             browsing_page_max: 0,
             browsing_query: web::WorkshopQuery::default(),
@@ -2142,7 +2141,8 @@ impl App {
                         let writer = std::fs::File::create_new(
                             profile_path.join(library::PROFILE_DATA_NAME),
                         )?;
-                        serde_json::to_writer_pretty(writer, &profile)?;
+                        serde_json::to_writer_pretty(writer, &profile)
+                            .map_err(std::io::Error::from)?;
                     };
                     if let Err(err) = result {
                         return Task::done(Message::display_error(
@@ -2993,11 +2993,11 @@ impl App {
             #[cfg(feature = "dbus")]
             Message::DbusError(err) => {
                 eprintln!("Unrecoverable dbus error: {err:?}");
-                return iced::window::get_oldest().and_then(iced::window::close);
+                return iced::window::oldest().and_then(iced::window::close);
             }
 
             Message::GainFocus => {
-                return iced::window::get_oldest().and_then(|id| {
+                return iced::window::oldest().and_then(|id| {
                     Task::batch([
                         // Currently, winit does not implement window::focus_window on wayland;
                         // as such, additionally requesting user attention as a fallback
@@ -3071,9 +3071,9 @@ impl App {
                     Task::none()
                 };
 
-                let result: Result<()> = try {
+                let result: std::io::Result<()> = try {
                     let file = std::fs::File::create(&*SAVE_PATH)?;
-                    serde_json::to_writer_pretty(file, &self.save)?;
+                    serde_json::to_writer_pretty(file, &self.save).map_err(std::io::Error::from)?;
                 };
                 if let Err(err) = result {
                     eprintln!("Error saving application data: {err:?}");
@@ -3082,7 +3082,7 @@ impl App {
                 return Task::done(Message::SetBusyMessage("Shutting down...".to_string()))
                     .chain(logout_task)
                     .chain(quit_task)
-                    .chain(iced::window::get_oldest().and_then(iced::window::close));
+                    .chain(iced::window::oldest().and_then(iced::window::close));
             }
             Message::LoggingSetup(sender) => {
                 println!("Logging should be set up...");
@@ -3200,10 +3200,11 @@ impl App {
                     ));
                 }
 
-                let result: Result<()> = try {
+                let result: std::io::Result<()> = try {
                     std::fs::write(
                         &*SETTINGS_PATH,
-                        serde_json::to_string_pretty(&self.settings)?,
+                        serde_json::to_string_pretty(&self.settings)
+                            .map_err(std::io::Error::from)?,
                     )?
                 };
                 if let Err(err) = result {
@@ -3397,7 +3398,7 @@ impl App {
         column![
             row![
                 button("View Details").on_press_with(|| Message::SetViewingItem(item_id.clone())),
-                horizontal_space(),
+                space::horizontal(),
                 button("Remove Mod")
                     .style(button::danger)
                     .on_press_with(|| Message::ProfileRemoveItems(
@@ -3414,9 +3415,9 @@ impl App {
             return container(
                 column![
                     text("Failed to load details"),
-                    vertical_space(),
+                    space::vertical(),
                     row![
-                        horizontal_space(),
+                        space::horizontal(),
                         button("Close")
                             .style(button::danger)
                             .on_press(Message::CloseModal)
@@ -3668,11 +3669,11 @@ impl App {
                 ),
             };
 
-            row([label.into(), horizontal_space().into(), editor])
+            row([label.into(), space::horizontal().into(), editor])
                 .height(32)
                 .into()
         }))
-        .push(horizontal_rule(2))
+        .push(rule::horizontal(2))
         .push(text("Local Mod Directories"))
         .extend(
             self.save
@@ -3694,7 +3695,7 @@ impl App {
         let scroll = scrollable(col.padding(16)).height(Fill);
 
         let bottom = row![
-            horizontal_space(),
+            space::horizontal(),
             button("Reset to Default").on_press(SettingsMessage::ResetToDefault.into()),
             button("Reset to Saved").on_press(SettingsMessage::ResetToSaved.into()),
             button("Save").on_press_maybe(
@@ -3743,7 +3744,7 @@ impl App {
                         AppModal::ProfileAddRequest => self.profile_add_modal(),
                         AppModal::ProfileDetails(name) => {
                             container(container(column![
-                                row![container(text("Profile Details").size(24)).padding(4), horizontal_space(), button("X").style(button::danger).on_press_with(|| {
+                                row![container(text("Profile Details").size(24)).padding(4), space::horizontal(), button("X").style(button::danger).on_press_with(|| {
                                     if let Some(profile) = self.profiles.get(name) && profile.settings != profile.settings_editing {
                                         Message::display_error("Unsaved Changes", "This profile has unsaved changes!")
                                     } else {
@@ -3804,7 +3805,7 @@ impl App {
                         self.save.active_profile.as_ref(),
                         Message::ActiveProfileSelected,
                     )
-                ),
+                ).width(Fill),
                 LabeledFrame::new(
                     "Game Directory",
                     row![
@@ -3824,7 +3825,7 @@ impl App {
                         )
                         .on_input_maybe(cfg!(not(feature = "flatpak")).then_some(|s| Message::LoadSetGameDirectory(PathBuf::from(s)))),
                     ],
-                ),
+                ).width(Fill),
                 LabeledFrame::new("Local Directory",
                     row![
                         button(symbols::folder()).on_press(Message::LoadPickLocalDirectory),
@@ -3846,7 +3847,7 @@ impl App {
                             container("This is the path where the game expects find your local data (e.g. saves). Files/folders that are modified will have backups automatically created."),
                         ),
                     ],
-                ),
+                ).width(Fill),
                 LabeledFrame::new(
                     "Launch Command",
                     row![
@@ -3857,7 +3858,7 @@ impl App {
                         )
                         .on_input(Message::LoadSetLaunchCommand),
                     ],
-                ),
+                ).width(Fill),
                 LabeledFrame::new(
                     "Launch Args",
                     column(self.save.launch_args.iter().enumerate().map(|(i, (l, r))| {
@@ -3875,47 +3876,48 @@ impl App {
                     }))
                     .width(Fill)
                     .push(button("Add +").on_press(Message::LoadAddLaunchArgs))
-                ),
+                ).width(Fill),
                 row![
                     button("Apply").on_press_maybe(self.save.active_profile.is_some().then_some(Message::LoadPrepareProfile(true))),
                     button("Launch").on_press_maybe(self.save.active_profile.is_some().then_some(Message::LoadLaunchGame)),
                 ].spacing(8),
             ]
+            .width(Fill)
             .padding(16),
         )
     }
 
     fn library_page(&self) -> Element<'_, Message> {
-        let mut grid = iced_aw::grid!()
-            .column_spacing(8)
-            .row_height(Shrink)
-            .row_spacing(8);
-
         let all_selected = self.library.iter_filtered().all(|item| item.selected);
         let some_selected = self.library.iter_filtered().any(|item| item.selected);
 
-        grid = grid.push(iced_aw::grid_row!(
-            checkbox("", all_selected).on_toggle(Message::LibraryToggleAll),
-            text(""),
-            text("Workshop ID"),
-            text("Title"),
-            text("ID"),
-            text("Path"),
-        ));
+        #[derive(Debug, Clone, Copy)]
+        struct ItemMeta<'a> {
+            id: &'a ModId,
+            missing: Option<&'a Vec<String>>,
+            text_style: fn(&Theme) -> iced::widget::text::Style,
+        }
 
-        for item in self.library.iter_filtered() {
-            let id = &item.id;
-            let missing = self.library.missing_dependencies.get(id);
-            let text_style = if missing.is_some() {
-                text::danger
-            } else {
-                text::default
-            };
-
-            grid = grid.push(iced_aw::grid_row!(
-                checkbox("", item.selected)
-                    .on_toggle(move |toggle| Message::LibraryToggleItem(id.clone(), toggle)),
-                button(symbols::eye()).on_press_with(|| Message::SetViewingItem(id.clone())),
+        let cols = [
+            table::column(
+                checkbox(all_selected).on_toggle(Message::LibraryToggleAll),
+                |(item, _meta): (&LibraryItem, ItemMeta)| {
+                    checkbox(item.selected).on_toggle(move |toggle| {
+                        Message::LibraryToggleItem(item.id.clone(), toggle)
+                    })
+                },
+            )
+            .align_y(Center),
+            table::column("", |(item, _meta): (&LibraryItem, ItemMeta)| {
+                button(symbols::eye()).on_press_with(|| Message::SetViewingItem(item.id.clone()))
+            })
+            .align_y(Center),
+            table::column("Workshop ID", |(_item, meta): (&LibraryItem, ItemMeta)| {
+                let ItemMeta {
+                    id,
+                    missing,
+                    text_style,
+                } = meta;
                 tooltip(
                     rich_text([span(id.get_hash().truncated_overflow(12).to_string())
                         .link(id.get_hash())
@@ -3935,23 +3937,54 @@ impl App {
                         container("")
                     },
                     tooltip::Position::Right,
-                ),
-                text(&item.title).style(text_style),
+                )
+            })
+            .align_y(Center),
+            table::column("Title", |(item, meta): (&LibraryItem, ItemMeta)| {
+                text(&item.title).style(meta.text_style)
+            })
+            .align_y(Center),
+            table::column("ID", |(_item, meta): (&LibraryItem, ItemMeta)| {
                 text(
                     self.file_cache
-                        .get_mod_metadata(id)
+                        .get_mod_metadata(meta.id)
                         .map(|data| data.dlc_name.clone())
-                        .unwrap_or("UNKNOWN".to_string())
+                        .unwrap_or("UNKNOWN".to_string()),
                 )
-                .style(text_style),
-                text(item.path.display().to_string()).style(text_style),
-            ));
-        }
+                .style(meta.text_style)
+            })
+            .align_y(Center),
+            table::column("Path", |(item, meta): (&LibraryItem, ItemMeta)| {
+                text(item.path.display().to_string()).style(meta.text_style)
+            })
+            .align_y(Center),
+        ];
+
+        let table = iced::widget::table(
+            cols,
+            self.library.iter_filtered().map(|item| {
+                let id = &item.id;
+                let missing = self.library.missing_dependencies.get(id);
+                let text_style = if missing.is_some() {
+                    text::danger
+                } else {
+                    text::default
+                };
+                (
+                    item,
+                    ItemMeta {
+                        id,
+                        missing,
+                        text_style,
+                    },
+                )
+            }),
+        );
 
         column![
             row![
                 row![button("Rescan").on_press(Message::LibraryScanRequest)],
-                vertical_rule(2),
+                rule::vertical(2),
                 row![
                     button("Check Updates").on_press_maybe(
                         some_selected.then_some(Message::LibraryCheckOutdatedRequest)
@@ -3978,7 +4011,8 @@ impl App {
                     .on_input(Message::LibraryFilterUpdateQuery),
             ],
             container(
-                scrollable(container(grid).padding(16))
+                // scrollable(container(table).padding(16))
+                scrollable(table)
                     .direction(scrollable::Direction::Both {
                         vertical: Default::default(),
                         horizontal: Default::default()
@@ -4016,7 +4050,7 @@ impl App {
                     .placeholder("Log currently empty...")
                     .on_action(Message::LogAction)
                     .font(iced::Font::MONOSPACE)
-                    .highlight("log", iced::highlighter::Theme::Leet)
+                    .highlight("log", iced::highlighter::Theme::SolarizedDark)
                     .height(Fill)
             )
             .style(container::dark)
@@ -4117,7 +4151,7 @@ impl App {
                 .any(|(this, _)| this == id)
                 .then_some(
                     column![
-                        vertical_space(),
+                        space::vertical(),
                         button("Cancel")
                             .style(button::danger)
                             .on_press(Message::DownloadCancelRequested(*id)),
@@ -4151,10 +4185,10 @@ impl App {
                 let displayed_size = files::SizeDisplay::automatic(*size);
                 row![
                     text!("Unknown ({id}) - {displayed_size}"),
-                    horizontal_space(),
+                    space::horizontal(),
                 ]
             }
-            .push(column![vertical_space(), view_details!(*id)].height(50))
+            .push(column![space::vertical(), view_details!(*id)].height(50))
             .push(cancel)
             .into()
         };
@@ -4188,7 +4222,7 @@ impl App {
             col = col.push(
                 row![
                     text("Completed").size(24),
-                    horizontal_space(),
+                    space::horizontal(),
                     button("Clear All").on_press(Message::SteamCMDDownloadCompletedClear(
                         self.completed_downloads.iter().copied().collect()
                     ))
@@ -4207,7 +4241,7 @@ impl App {
                             };
                         row![
                             text(info).shaping(text::Shaping::Advanced),
-                            horizontal_space(),
+                            space::horizontal(),
                             view_details!(*id),
                             button("Clear")
                                 .on_press(Message::SteamCMDDownloadCompletedClear(vec![*id])),
@@ -4221,7 +4255,7 @@ impl App {
             col = col.push(
                 row![
                     text("Pending Updates").size(24),
-                    horizontal_space(),
+                    space::horizontal(),
                     button("Download All").on_press_with(|| Message::DownloadPushPending(
                         self.pending_queue.keys().copied().collect_vec()
                     ))
@@ -4241,7 +4275,7 @@ impl App {
                         text(info).shaping(text::Shaping::Advanced),
                         text!("Last Updated - {formatted}")
                     ],
-                    horizontal_space(),
+                    space::horizontal(),
                     button("View Change Notes").on_press_with(move || web::open_browser(format!(
                         "https://steamcommunity.com/sharedfiles/filedetails/changelog/{id}"
                     ))),
@@ -4256,7 +4290,7 @@ impl App {
             col = col.push(
                 row![
                     text("Errored Downloads").size(24),
-                    horizontal_space(),
+                    space::horizontal(),
                     button("Clear All").on_press_with(|| Message::SteamCMDDownloadErrorClear(
                         self.errorred_downloads.keys().copied().collect()
                     ))
@@ -4273,7 +4307,7 @@ impl App {
 
                     row![
                         text(info),
-                        horizontal_space(),
+                        space::horizontal(),
                         view_details!(*id),
                         button("Retry").on_press(Message::SteamCMDDownloadRequested(*id)),
                         button("Clear").on_press(Message::SteamCMDDownloadErrorClear(vec![*id])),
@@ -4298,7 +4332,7 @@ impl App {
                     .placeholder("Log currently empty...")
                     .on_action(Message::LaunchLogAction)
                     .font(iced::Font::MONOSPACE)
-                    .highlight("log", iced::highlighter::Theme::Leet)
+                    .highlight("log", iced::highlighter::Theme::SolarizedDark)
                     .height(Fill),
             )
             .style(container::dark)
@@ -4358,7 +4392,7 @@ impl App {
             button("Cancel")
                 .style(button::danger)
                 .on_press(Message::ProfileAddCompleted(false)),
-            horizontal_space(),
+            space::horizontal(),
             button("Confirm").style(button::success).on_press_maybe(
                 self.profile_add_name
                     .is_empty()
@@ -4371,32 +4405,29 @@ impl App {
     }
 
     fn add_to_profile_modal<'a>(&'a self, items: &'a [ModId]) -> Element<'a, Message> {
-        let grid = iced_aw::grid![iced_aw::grid_row![
-            checkbox(
-                "",
-                self.profiles.values().all(|profile| profile.add_selected)
-            )
-            .on_toggle(Message::LibraryAddToProfileToggleAll),
+        let grid = iced::widget::grid![row![
+            checkbox(self.profiles.values().all(|profile| profile.add_selected))
+                .on_toggle(Message::LibraryAddToProfileToggleAll),
             text("Name")
-        ]]
-        .column_widths(&[Shrink, Shrink]);
+        ]];
 
         iced_aw::card(
             "Add to Profile",
             scrollable(grid.extend(self.profiles.iter().map(|(name, profile)| {
-                iced_aw::grid_row![
-                    checkbox("", profile.add_selected).on_toggle(|toggle| {
+                row![
+                    checkbox(profile.add_selected).on_toggle(|toggle| {
                         Message::LibraryAddToProfileToggled(name.clone(), toggle)
                     }),
                     text(profile.name.as_str())
                 ]
+                .into()
             }))),
         )
         .foot(row![
             button("Cancel")
                 .style(button::danger)
                 .on_press(Message::LibraryAddToProfileConfirm(Vec::new())),
-            horizontal_space(),
+            space::horizontal(),
             button("Confirm")
                 .style(button::success)
                 .on_press_with(|| Message::LibraryAddToProfileConfirm(items.to_vec())),
@@ -4412,7 +4443,7 @@ impl App {
     ) -> Element<'_, Message> {
         iced_aw::card(text(title.to_string()), column![text(message.to_string()),])
             .foot(row![
-                horizontal_space(),
+                space::horizontal(),
                 button("Close")
                     .style(button::danger)
                     .on_press(Message::CloseModal)
@@ -4436,7 +4467,7 @@ impl App {
         )
         .foot(row![
             button("Cancel").on_press(Message::CloseModal),
-            horizontal_space(),
+            space::horizontal(),
             button("Delete")
                 .style(button::danger)
                 .on_press(Message::LibraryDeleteConfirm),
@@ -4971,10 +5002,8 @@ pub fn main() -> eyre::Result<()> {
     };
 
     let result = {
-        let icon = iced::window::icon::from_file_data(
-            include_bytes!("../assets/lxcomm_64x64.png"),
-            Some(iced::advanced::graphics::image::image_rs::ImageFormat::Png),
-        )?;
+        let icon =
+            iced::window::icon::from_file_data(include_bytes!("../assets/lxcomm_64x64.png"), None)?;
 
         #[cfg(feature = "dbus")]
         let connection = {
@@ -5051,7 +5080,7 @@ pub fn main() -> eyre::Result<()> {
         .theme(App::theme)
         .subscription(App::subscription)
         .exit_on_close_request(false)
-        .font(iced_aw::temp_fonts::REQUIRED_FONT_BYTES);
+        .font(iced_aw::ICED_AW_FONT_BYTES);
 
     // TODO - Figure out why icon fonts don't render properly on Windows.
     #[cfg(not(target_os = "windows"))]
