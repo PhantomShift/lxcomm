@@ -1,4 +1,4 @@
-use std::{collections::HashSet, path::Path};
+use std::{borrow::Cow, collections::HashSet, path::Path};
 
 use dashmap::DashMap;
 
@@ -7,6 +7,11 @@ use crate::{
     library::{self, Profile},
     xcom_mod::{self, ModId},
 };
+
+#[non_exhaustive]
+pub struct LoadSettings {
+    pub linux_native_mode: bool,
+}
 
 pub fn build_active_config<D: AsRef<Path>>(
     download_dir: D,
@@ -192,6 +197,7 @@ pub fn mod_list(
 
 pub fn link_mod_environment<D: AsRef<Path>>(
     profile: &Profile,
+    settings: &LoadSettings,
     metadata: &DashMap<ModId, xcom_mod::ModMetadata>,
     destination: D,
 ) -> Result<(), std::io::Error> {
@@ -208,15 +214,25 @@ pub fn link_mod_environment<D: AsRef<Path>>(
         ));
     }
 
-    let xcom_game_dir = destination.as_ref().join("XComGame");
-    let mods_dest = xcom_game_dir.join("Mods");
+    let lower_linux = move |s: &'static str| -> Cow<'static, str> {
+        if settings.linux_native_mode {
+            Cow::Owned(s.to_lowercase())
+        } else {
+            Cow::from(s)
+        }
+    };
+
+    let xcom_game_dir = destination.as_ref().join(lower_linux("XComGame").as_ref());
+    let mods_dest = xcom_game_dir.join(lower_linux("Mods").as_ref());
     if mods_dest.try_exists()? {
         let backup = mods_dest.with_added_extension("bak");
         if !backup.try_exists()? {
             eprintln!("Moving existing mods directory to {}...", backup.display());
             std::fs::rename(&mods_dest, backup)?;
         }
-        std::fs::remove_dir_all(&mods_dest)?;
+        if mods_dest.exists() {
+            std::fs::remove_dir_all(&mods_dest)?;
+        }
     } else if let Ok(metadata) = std::fs::symlink_metadata(&mods_dest)
         && metadata.is_symlink()
     {
@@ -227,11 +243,11 @@ pub fn link_mod_environment<D: AsRef<Path>>(
         std::fs::remove_dir_all(&mods_dest)?;
     }
 
-    let config_dest = xcom_game_dir.join("Config");
+    let config_dest = xcom_game_dir.join(lower_linux("Config").as_ref());
     if !config_dest.try_exists()? {
         std::fs::create_dir(&config_dest)?;
     }
-    let default_mod_options = config_dest.join("DefaultModOptions.ini");
+    let default_mod_options = config_dest.join(lower_linux("DefaultModOptions.ini").as_ref());
     if default_mod_options.try_exists()?
         && !default_mod_options
             .with_added_extension("bak")
@@ -256,6 +272,7 @@ pub fn link_mod_environment<D: AsRef<Path>>(
 
 pub fn link_profile_local_files<L: AsRef<Path>>(
     profile: &Profile,
+    metadata: &DashMap<ModId, xcom_mod::ModMetadata>,
     local_path: L,
 ) -> Result<(), std::io::Error> {
     // Validate that this is actually the game's local documents folder
@@ -336,19 +353,25 @@ pub fn link_profile_local_files<L: AsRef<Path>>(
     link_profile_folder(library::profile_folder::PHOTOBOOTH)?;
     link_profile_folder(library::profile_folder::SAVE_DATA)?;
 
+    // This fix was added for native Linux version, but it should be safely applicable to Windows/Proton version
+    let config_dir = local_path.as_ref().join(library::profile_folder::CONFIG);
+    let xcom_mod_options = std::fs::File::create(config_dir.join("XComModOptions.ini"))?;
+    write_mod_list(profile, metadata, xcom_mod_options)?;
+
     Ok(())
 }
 
 // All necessary steps to load a profile into the game directory
 pub fn bootstrap_load_profile<DL: AsRef<Path>, DS: AsRef<Path>, L: AsRef<Path>>(
     profile: &Profile,
+    settings: LoadSettings,
     download_dir: DL,
     metadata: &DashMap<ModId, xcom_mod::ModMetadata>,
     destination: DS,
     local_path: L,
 ) -> Result<(), std::io::Error> {
     build_mod_environment(download_dir.as_ref(), metadata, profile)?;
-    link_mod_environment(profile, metadata, destination.as_ref())?;
-    link_profile_local_files(profile, local_path.as_ref())?;
+    link_mod_environment(profile, &settings, metadata, destination.as_ref())?;
+    link_profile_local_files(profile, metadata, local_path.as_ref())?;
     Ok(())
 }

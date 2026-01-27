@@ -264,6 +264,7 @@ pub enum Message {
     LoadRemoveLaunchArgs(usize),
     LoadEditArgKey(usize, String),
     LoadEditArgValue(usize, String),
+    LoadToggleLinuxNative(bool),
     LoadLaunchGame,
 
     LoadFindGameRequested,
@@ -469,6 +470,8 @@ struct AppSave {
     launch_args: Vec<(String, String)>,
     #[serde(default)]
     local_mod_dirs: IndexSet<PathBuf>,
+    #[serde(default)]
+    linux_native_mode: bool,
 }
 
 impl AppSave {
@@ -2693,11 +2696,16 @@ impl App {
                         format!("Could not find game directory at {}", destination.display()),
                     ));
                 }
-                if !destination.join("XComGame").exists() {
+                let xcom_subdir = if self.save.linux_native_mode {
+                    "xcomgame"
+                } else {
+                    "XComGame"
+                };
+                if !destination.join(xcom_subdir).exists() {
                     return Task::done(Message::display_error(
                         "Invalid Game Directory",
                         format!(
-                            "Unable to find the 'XComGame' subdirectory in {}",
+                            "Unable to find the '{xcom_subdir}' subdirectory in {}",
                             destination.display()
                         ),
                     ));
@@ -2708,6 +2716,9 @@ impl App {
                 {
                     if let Err(err) = loading::bootstrap_load_profile(
                         profile,
+                        loading::LoadSettings {
+                            linux_native_mode: self.save.linux_native_mode,
+                        },
                         &self.settings.download_directory,
                         self.file_cache.get_mod_metadata_list(),
                         destination,
@@ -2806,6 +2817,9 @@ impl App {
                     *v = value;
                 }
             }
+            Message::LoadToggleLinuxNative(toggled) => {
+                self.save.linux_native_mode = toggled;
+            }
             Message::LoadLaunchGame => {
                 return if let Some(command) = self.save.launch_command.clone() {
                     if self.settings.reload_profile_on_launch {
@@ -2874,8 +2888,12 @@ impl App {
             }
 
             Message::LoadFindGameRequested => {
-                let (task, abort) =
-                    files::find_directories_matching("XCOM 2/XCom2-WarOfTheChosen/Binaries");
+                let search = if self.save.linux_native_mode {
+                    "XCOM 2/share/data/binaries"
+                } else {
+                    "XCOM 2/XCom2-WarOfTheChosen/Binaries"
+                };
+                let (task, abort) = files::find_directories_matching(search);
 
                 if let Some(handle) = self.abortable_handles.insert(AppAbortKey::GameFind, abort) {
                     handle.abort();
@@ -2921,9 +2939,12 @@ impl App {
             }
             // Possible TODO - convert this into a macro
             Message::LoadFindLocalRequested => {
-                let (task, abort) = files::find_directories_matching(
-                    "Documents/My Games/XCOM2 War of the Chosen/XComGame",
-                );
+                let search = if self.save.linux_native_mode {
+                    "feral-interactive/XCOM 2 WotC/VFS/Local/my games/XCOM2 War of the Chosen/XComGame"
+                } else {
+                    "Documents/My Games/XCOM2 War of the Chosen/XComGame"
+                };
+                let (task, abort) = files::find_directories_matching(search);
 
                 if let Some(handle) = self.abortable_handles.insert(AppAbortKey::LocalFind, abort) {
                     handle.abort();
@@ -3877,6 +3898,11 @@ impl App {
                     .width(Fill)
                     .push(button("Add +").on_press(Message::LoadAddLaunchArgs))
                 ).width(Fill),
+                #[cfg(target_os = "linux")]
+                tooltip!(
+                    toggler(self.save.linux_native_mode).label("Linux Native Mode").on_toggle(Message::LoadToggleLinuxNative),
+                    container("Enable if running the game natively on Linux instead of through Proton/WINE")
+                ),
                 row![
                     button("Apply").on_press_maybe(self.save.active_profile.is_some().then_some(Message::LoadPrepareProfile(true))),
                     button("Launch").on_press_maybe(self.save.active_profile.is_some().then_some(Message::LoadLaunchGame)),
