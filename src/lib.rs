@@ -3898,9 +3898,10 @@ impl App {
                     .width(Fill)
                     .push(button("Add +").on_press(Message::LoadAddLaunchArgs))
                 ).width(Fill),
-                #[cfg(target_os = "linux")]
                 tooltip!(
-                    toggler(self.save.linux_native_mode).label("Linux Native Mode").on_toggle(Message::LoadToggleLinuxNative),
+                    toggler(self.save.linux_native_mode)
+                        .label("Linux Native Mode")
+                        .on_toggle_maybe(cfg!(target_os = "linux").then_some(Message::LoadToggleLinuxNative)),
                     container("Enable if running the game natively on Linux instead of through Proton/WINE")
                 ),
                 row![
