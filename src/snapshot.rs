@@ -698,7 +698,9 @@ fn apply_ops(root: &Path, ops: &[SnapshotOp], cache: &mut WorkingCache) -> std::
                     cache.remove(name);
                 }
                 SnapshotOp::CreateDir(path) => {
-                    std::fs::create_dir(root.join(path))?;
+                    if !root.join(path).exists() {
+                        std::fs::create_dir(root.join(path))?;
+                    }
                 }
                 SnapshotOp::Create(_, contents) => {
                     cache.insert(name.to_owned(), contents.to_owned());
