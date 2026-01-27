@@ -157,6 +157,9 @@ pub fn write_mod_list<W: std::io::Write>(
 ) -> Result<(), std::io::Error> {
     writeln!(writer, "[Engine.XComModOptions]")?;
 
+    let mut len = 0;
+    let mut lines = Vec::new();
+
     for id in profile.items.keys() {
         let Some(data) = metadata.get(id) else {
             return Err(std::io::Error::new(
@@ -165,8 +168,14 @@ pub fn write_mod_list<W: std::io::Write>(
             ));
         };
 
-        writeln!(writer, r#"ActiveMods="{}""#, data.dlc_name)?;
+        let b = format!("ActiveMods={}\n", data.dlc_name).into_bytes();
+        len += b.len();
+        lines.push(b);
     }
+    lines.sort();
+    let mut buf = Vec::with_capacity(len);
+    buf.extend(lines.into_iter().flatten());
+    writer.write_all(&buf)?;
     Ok(())
 }
 
