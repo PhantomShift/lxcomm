@@ -4432,23 +4432,25 @@ impl App {
     }
 
     fn add_to_profile_modal<'a>(&'a self, items: &'a [ModId]) -> Element<'a, Message> {
-        let grid = iced::widget::grid![row![
-            checkbox(self.profiles.values().all(|profile| profile.add_selected))
-                .on_toggle(Message::LibraryAddToProfileToggleAll),
-            text("Name")
-        ]];
+        let cols = [
+            table::column(
+                checkbox(self.profiles.values().all(|profile| profile.add_selected))
+                    .on_toggle(Message::LibraryAddToProfileToggleAll),
+                |(name, profile): (&String, &library::Profile)| {
+                    checkbox(profile.add_selected).on_toggle(|toggle| {
+                        Message::LibraryAddToProfileToggled(name.clone(), toggle)
+                    })
+                },
+            ),
+            table::column(
+                "Profile",
+                |(_name, profile): (&String, &library::Profile)| text(profile.name.as_str()),
+            ),
+        ];
 
         iced_aw::card(
             "Add to Profile",
-            scrollable(grid.extend(self.profiles.iter().map(|(name, profile)| {
-                row![
-                    checkbox(profile.add_selected).on_toggle(|toggle| {
-                        Message::LibraryAddToProfileToggled(name.clone(), toggle)
-                    }),
-                    text(profile.name.as_str())
-                ]
-                .into()
-            }))),
+            scrollable(table::table(cols, self.profiles.iter())),
         )
         .foot(row![
             button("Cancel")
