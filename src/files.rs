@@ -552,16 +552,7 @@ pub fn find_directories_matching<P: Into<PathBuf>>(
 
         let walker = walkdir::WalkDir::new("/").min_depth(2);
         tokio::task::spawn_blocking(move || {
-            for entry in walker
-                .into_iter()
-                .filter_entry(|p| {
-                    !p.file_name()
-                        .to_str()
-                        .map(|s| s.starts_with("."))
-                        .unwrap_or(false)
-                })
-                .filter_map(|entry| entry.ok())
-            {
+            for entry in walker.into_iter().filter_map(|entry| entry.ok()) {
                 let mut iter = entry.path().components();
                 let components = iter.by_ref();
                 components.find(|comp| {
