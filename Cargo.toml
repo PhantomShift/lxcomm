@@ -1,6 +1,6 @@
 [package]
 name = "lxcomm"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 license = "MIT OR APACHE-2.0"
 repository = "https://github.com/phantomshift/lxcomm"
