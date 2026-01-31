@@ -256,6 +256,7 @@ pub trait PageProvider {
                 if let Some(period) = params.sort_method.maybe_period() {
                     query.append_pair("days", &period.to_string());
                 }
+                query.append_pair("l", "english");
                 query.finish();
             }
 
