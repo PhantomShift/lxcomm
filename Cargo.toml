@@ -1,3 +1,6 @@
+[workspace]
+members = ["workshop-reader"]
+
 [package]
 name = "lxcomm"
 version = "0.4.2"
@@ -29,7 +32,10 @@ moka = { version = "0.12.10", features = ["future", "sync"] }
 notify = "8.1.0"
 opener = "0.8.2"
 reqwest = "0.12.22"
-rfd = { version = "0.15.4", default-features = false, features = ["tokio", "xdg-portal"] }
+rfd = { version = "0.15.4", default-features = false, features = [
+    "tokio",
+    "xdg-portal",
+] }
 ringmap = "0.1.4"
 secrecy = { version = "0.10.3", features = ["serde"] }
 serde = { version = "1.0.219", features = ["serde_derive", "rc"] }
@@ -38,7 +44,9 @@ similar = "2.7.0"
 steam-rs = "0.5.1"
 strip-ansi-escapes = "0.2.1"
 strum = { version = "0.27.1", features = ["derive", "strum_macros"] }
-two-face = { version = "*", default-features = false, features = ["syntect-default-fancy"] }
+two-face = { version = "*", default-features = false, features = [
+    "syntect-default-fancy",
+] }
 thiserror = "2.0.12"
 tokio = "1.46.0"
 tokio-util = { version = "0.7.15", features = ["rt"] }
@@ -65,15 +73,37 @@ iced_fonts = { version = "0.3.0", features = ["fontawesome"] }
 [dependencies.iced]
 version = "0.14.0"
 default-features = false
-features = ["wgpu", "tiny-skia", "web-colors", "linux-theme-detection", "advanced", "highlighter", "image", "lazy", "markdown", "svg", "tokio", "thread-pool", "wayland", "x11"]
+features = [
+    "wgpu",
+    "tiny-skia",
+    "web-colors",
+    "linux-theme-detection",
+    "advanced",
+    "highlighter",
+    "image",
+    "lazy",
+    "markdown",
+    "svg",
+    "tokio",
+    "thread-pool",
+    "wayland",
+    "x11",
+]
 
 [dependencies.iced_aw]
 version = "0.13.0"
 default-features = false
-features = ["card", "labeled_frame", "number_input", "spinner", "drop_down", "badge"]
+features = [
+    "card",
+    "labeled_frame",
+    "number_input",
+    "spinner",
+    "drop_down",
+    "badge",
+]
 
 [patch.crates-io]
-steam-rs = { git = "https://github.com/phantomshift/steam-rs.git", branch = "get-details"}
+steam-rs = { git = "https://github.com/phantomshift/steam-rs.git", branch = "get-details" }
 
 [profile.dev]
 # Strange issue with loading lots of images,
