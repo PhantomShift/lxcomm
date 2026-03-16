@@ -4899,7 +4899,7 @@ impl App {
                 return Ok(());
             }
 
-            images.sort_by(|a, b| a.accessed.cmp(&b.accessed));
+            images.sort_by_key(|a| a.accessed);
 
             for ImageInfo { path, size, .. } in images {
                 if current_size < SIZE_LIMIT {

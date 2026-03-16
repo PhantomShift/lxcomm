@@ -764,8 +764,8 @@ pub fn build_manifest(library_ids: Vec<u32>, cache: Cache) -> AppWorkshopManifes
         .collect::<BTreeMap<u64, Arc<File>>>();
 
     let size_on_disk: u64 = info
-        .iter()
-        .filter_map(|(_, details)| details.file_size.parse::<u64>().ok())
+        .values()
+        .filter_map(|details| details.file_size.parse::<u64>().ok())
         .sum();
 
     let (workshop_items_installed, workshop_item_details): (
