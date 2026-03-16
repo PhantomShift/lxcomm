@@ -40,7 +40,7 @@ pub trait WorkshopBrowser {
 
     fn get_page(&self) -> u32;
     fn get_max_page(&self) -> u32;
-    fn get_query(&self) -> &WorkshopQuery;
+    fn get_query(&self) -> WorkshopQuery;
     fn get_tags_toggled(&self) -> bool;
     fn get_scroll_id(&self) -> iced::widget::Id;
 
@@ -83,10 +83,10 @@ pub trait WorkshopBrowser {
             ],
             row![pick_list(
                 web::WorkshopSort::all_with_period(query.sort.period_or_default()),
-                Some(&query.sort),
+                Some(query.sort),
                 |new| self.on_query_sort_edited(state, new).into()
             )]
-            .push(match &query.sort {
+            .push(match query.sort {
                 web::WorkshopSort::Trend(period) => {
                     Some(pick_list(
                         web::WorkshopTrendPeriod::VARIANTS,
@@ -162,8 +162,8 @@ impl WorkshopBrowser for App {
     fn get_page(&self) -> u32 {
         self.browsing_page
     }
-    fn get_query(&self) -> &WorkshopQuery {
-        &self.browsing_query
+    fn get_query(&self) -> WorkshopQuery {
+        self.browsing_query.clone()
     }
     fn get_tags_toggled(&self) -> bool {
         self.browse_query_tags_open

@@ -1,6 +1,10 @@
-use std::sync::{Arc, LazyLock};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, LazyLock},
+};
 
 use chrono::{Datelike, NaiveDateTime};
+use strum::VariantArray;
 
 #[macro_use]
 extern crate markup5ever;
@@ -128,12 +132,18 @@ pub struct WorkshopFile {
     pub tags: Arc<[String]>,
 }
 
+#[derive(Debug, Clone, Copy, Default, Hash, PartialEq, Eq, PartialOrd, Ord, VariantArray)]
 pub enum QueryPeriod {
     Today,
+    #[default]
     Week,
+    #[strum(to_string = "Three Months")]
     ThreeMonths,
+    #[strum(to_string = "Six Months")]
     SixMonths,
+    #[strum(to_string = "One Year")]
     OneYear,
+    #[strum(to_string = "All Time")]
     AllTime,
 }
 
@@ -150,12 +160,19 @@ impl QueryPeriod {
     }
 }
 
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum QuerySort {
     Trend(QueryPeriod),
     MostRecent,
     LastUpdated,
     TotalUniqueSubscribers,
     TextSearch,
+}
+
+impl Default for QuerySort {
+    fn default() -> Self {
+        Self::Trend(QueryPeriod::Week)
+    }
 }
 
 impl QuerySort {
@@ -178,10 +195,11 @@ impl QuerySort {
     }
 }
 
+#[derive(Debug, Default, Clone)]
 pub struct QueryParams {
-    pub search_text: Option<String>,
+    pub search_text: String,
     pub sort_method: QuerySort,
-    pub tags: Vec<String>,
+    pub tags: BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -203,6 +221,41 @@ pub struct QueryResult {
 
 pub trait PageProvider {
     type Error: std::error::Error + 'static;
+
+    fn build_item_url(id: u64) -> String {
+        format!("https://steamcommunity.com/sharedfiles/filedetails/?id={id}&l=english")
+    }
+
+    fn build_browse_url(app_id: u64, page: u32, params: QueryParams) -> String {
+        let mut base = reqwest::Url::parse("https://steamcommunity.com/workshop/browse/")
+            .expect("base should be a well-formed URL");
+        {
+            let mut query = base.query_pairs_mut();
+            query.append_pair("appid", &app_id.to_string());
+            if !params.search_text.is_empty() {
+                query.append_pair("searchtext", &params.search_text);
+            }
+            query.append_pair("browsesort", params.sort_method.as_str());
+            query.append_pair("section", "readytouseitems");
+            query.append_pair("p", &page.to_string());
+            if let Some(period) = params.sort_method.maybe_period() {
+                query.append_pair("days", &period.to_string());
+            }
+            query.append_pair("l", "english");
+            query.finish();
+        }
+        base.to_string()
+    }
+
+    fn parse_item(page: &str) -> Result<WorkshopFile, error::Error> {
+        parse_document(scraper::Html::parse_document(page))
+    }
+
+    fn parse_browse(page: &str) -> Result<QueryResult, error::Error> {
+        let page = scraper::Html::parse_document(page);
+        parse_browse_result(page)
+    }
+
     fn request_page(
         &self,
         url: String,
@@ -222,16 +275,13 @@ pub trait PageProvider {
     fn request_item_details(
         &self,
         published_file_id: u64,
-    ) -> impl std::future::Future<Output = Result<WorkshopFile, error::Error>> {
+    ) -> impl std::future::Future<Output = Result<Arc<WorkshopFile>, error::Error>> {
         async move {
-            let page = self.request_page_wrapped(format!("https://steamcommunity.com/sharedfiles/filedetails/?id={published_file_id}&l=english")).await?;
-            let page = scraper::Html::parse_document(&page);
-            let parsed = parse_document(page)?;
+            let page = self
+                .request_page_wrapped(Self::build_item_url(published_file_id))
+                .await?;
 
-            Ok(WorkshopFile {
-                published_file_id,
-                ..parsed
-            })
+            Self::parse_item(&page).map(Arc::new)
         }
     }
 
@@ -240,29 +290,11 @@ pub trait PageProvider {
         app_id: u64,
         page: u32,
         params: QueryParams,
-    ) -> impl std::future::Future<Output = Result<QueryResult, error::Error>> {
+    ) -> impl std::future::Future<Output = Result<Arc<QueryResult>, error::Error>> {
         async move {
-            let mut base = reqwest::Url::parse("https://steamcommunity.com/workshop/browse/")
-                .expect("base should be a well-formed URL");
-            {
-                let mut query = base.query_pairs_mut();
-                query.append_pair("appid", &app_id.to_string());
-                if let Some(text) = &params.search_text {
-                    query.append_pair("searchtext", text);
-                }
-                query.append_pair("browsesort", params.sort_method.as_str());
-                query.append_pair("section", "readytouseitems");
-                query.append_pair("p", &page.to_string());
-                if let Some(period) = params.sort_method.maybe_period() {
-                    query.append_pair("days", &period.to_string());
-                }
-                query.append_pair("l", "english");
-                query.finish();
-            }
-
-            let page = self.request_page_wrapped(base.to_string()).await?;
-            let page = scraper::Html::parse_document(&page);
-            parse_browse_result(page)
+            let url = Self::build_browse_url(app_id, page, params);
+            let page = self.request_page_wrapped(url).await?;
+            Self::parse_browse(&page).map(Arc::new)
         }
     }
 }
@@ -569,9 +601,9 @@ mod tests {
                 268500,
                 1,
                 QueryParams {
-                    search_text: Some(String::from("highlander")),
+                    search_text: String::from("highlander"),
                     sort_method: QuerySort::Trend(QueryPeriod::AllTime),
-                    tags: Vec::new(),
+                    tags: BTreeSet::new(),
                 },
             )
             .await?;

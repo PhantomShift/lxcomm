@@ -71,6 +71,8 @@ pub mod loading;
 pub mod markup;
 pub mod metadata;
 pub mod mod_edit;
+/// Modules for web requests that are not backed by official APIs.
+pub mod no_api;
 pub mod platform;
 pub mod snapshot;
 pub mod steam_manifest;
@@ -304,6 +306,7 @@ pub enum Message {
 
     // Web-related
     ImageLoaded(String, image::Handle),
+    WorksopMessageNoAPI(no_api::browser::WorkshopClientMessage),
 
     #[default]
     None,
@@ -534,6 +537,8 @@ pub struct App {
     abortable_handles: HashMap<AppAbortKey, iced::task::Handle>,
     launch_log: iced::widget::text_editor::Content,
     collections: CollectionsState,
+
+    noapi_browser: no_api::browser::WorkshopItemsBrowser<no_api::browser::DefaultCacheProvider>,
 
     profile_pane_state: widgets::ProfilePaneState,
 }
@@ -1043,6 +1048,8 @@ impl App {
             abortable_handles: HashMap::new(),
             launch_log: Default::default(),
             collections: CollectionsState::default(),
+
+            noapi_browser: Default::default(),
 
             profile_pane_state: Default::default(),
         };
@@ -3158,6 +3165,10 @@ impl App {
                 self.launch_log = text_editor::Content::new();
             }
 
+            Message::WorksopMessageNoAPI(msg) => {
+                return self.noapi_browser.update(&self.images, msg);
+            }
+
             Message::None => (),
         }
 
@@ -3745,7 +3756,8 @@ impl App {
                     AppPage::Main => self.main_page(),
                     AppPage::Library => self.library_page(),
                     AppPage::Profiles => self.profiles_page(),
-                    AppPage::Browse => self.render_browser(self, self.loaded_files.iter()),
+                    // AppPage::Browse => self.render_browser(self, self.loaded_files.iter()),
+                    AppPage::Browse => self.noapi_browser.render_browser(self, self.noapi_browser.get_items()),
                     AppPage::SteamCMD => self.steamcmd_page(),
                     AppPage::Settings => self.settings_page(),
                     AppPage::Downloads => self.downloads_page(),

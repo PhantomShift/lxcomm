@@ -69,6 +69,8 @@ dashmap = "6.1.0"
 serde_with = "3.14.0"
 zip = { version = "4.3.0", default-features = false, features = ["zstd"] }
 iced_fonts = { version = "0.3.0", features = ["fontawesome"] }
+scraper = "0.25.0"
+workshop-reader = { path = "workshop-reader"}
 
 [dependencies.iced]
 version = "0.14.0"

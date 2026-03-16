@@ -295,6 +295,7 @@ pub fn resolve_all_dependencies_blocking(
     strum::AsRefStr,
     Serialize,
     Deserialize,
+    strum::EnumString,
 )]
 pub enum XCOM2WorkshopTag {
     #[strum(to_string = "War of the Chosen")]
@@ -325,7 +326,7 @@ pub enum WorkshopTrendPeriod {
     // URL parameter simply accepts `-1` in the workshop site itself,
     // but this doesn't seem to work with the web API.
     // Numbers > 365 seem to be truncated down to 365.
-    // AllTime,
+    AllTime,
 }
 
 impl Display for WorkshopTrendPeriod {
@@ -344,7 +345,7 @@ impl WorkshopTrendPeriod {
             WorkshopTrendPeriod::ThreeMonths => 30,
             WorkshopTrendPeriod::SixMonths => 180,
             WorkshopTrendPeriod::OneYear => 365,
-            // WorkshopTrendPeriod::AllTime => -1,
+            WorkshopTrendPeriod::AllTime => 365,
         }
     }
 }

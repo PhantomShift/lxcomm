@@ -150,8 +150,8 @@ impl WorkshopBrowser for CollectionsState {
     fn get_page(&self) -> u32 {
         self.browsing_page
     }
-    fn get_query(&self) -> &web::WorkshopQuery {
-        &self.browsing_query
+    fn get_query(&self) -> web::WorkshopQuery {
+        self.browsing_query.clone()
     }
     fn get_tags_toggled(&self) -> bool {
         self.browse_query_tags_open

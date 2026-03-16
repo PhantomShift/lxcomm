@@ -3286,6 +3286,7 @@ dependencies = [
  "reqwest",
  "rfd",
  "ringmap",
+ "scraper",
  "secrecy",
  "serde",
  "serde_json",
@@ -3302,6 +3303,7 @@ dependencies = [
  "two-face",
  "walkdir",
  "which",
+ "workshop-reader",
  "zbus",
  "zip",
 ]
@@ -7781,6 +7783,7 @@ dependencies = [
  "markup5ever",
  "reqwest",
  "scraper",
+ "strum",
  "tokio",
 ]
 
