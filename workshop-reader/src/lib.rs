@@ -472,7 +472,7 @@ fn parse_browse_result(doc: scraper::Html) -> Result<QueryResult, error::Error> 
         .split_once(" of ")
         .ok_or(error::Error::parse_error("failed to get paging info"))?
         .1
-        .trim_end_matches(" entries")
+        .replace(|c: char| !c.is_ascii_digit(), "")
         .parse::<u32>()
         .map_err(|_| error::Error::parse_error("failed to get paging info"))?
         / 30
