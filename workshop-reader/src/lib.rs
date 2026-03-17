@@ -33,6 +33,7 @@ mod selectors {
     selector!(STATS_TABLE, ".stats_table");
     selector!(REQUIRED_ITEMS, "#RequiredItems");
     selector!(RIGHT_DETAILS_BLOCK, ".rightDetailsBlock");
+    selector!(WORKSHOP_TAGS, ".workshopTags");
 
     // Workshop browse page selectors
     selector!(BROWSE_ITEMS, ".workshopBrowseItems");
@@ -419,17 +420,23 @@ fn parse_document(doc: scraper::Html) -> Result<WorkshopFile, error::Error> {
         })
         .collect();
 
-    let tags = doc
+    let builtin_tags = doc
         .select(&selectors::RIGHT_DETAILS_BLOCK)
         .next()
         .map(|e| e.child_elements())
         .into_iter()
         .flatten()
-        .filter_map(|el| {
-            let s = el.inner_html();
-            if !s.is_empty() { Some(s) } else { None }
-        })
-        .collect();
+        .filter_map(|el| (el.value().name() == "a").then_some(el.inner_html()));
+
+    let custom_tags = doc
+        .select(&selectors::WORKSHOP_TAGS)
+        .next()
+        .map(|e| e.child_elements())
+        .into_iter()
+        .flatten()
+        .filter_map(|el| (el.value().name() == "a").then_some(el.inner_html()));
+
+    let tags = Arc::from_iter(builtin_tags.chain(custom_tags).filter(|t| !t.is_empty()));
 
     Ok(WorkshopFile {
         published_file_id: 0,
