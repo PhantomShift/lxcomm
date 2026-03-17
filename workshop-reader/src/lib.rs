@@ -26,6 +26,7 @@ mod selectors {
     // Workshop item page selectors
     selector!(DETAILS_STATS_RIGHT, ".detailsStatRight");
     selector!(PREVIEW_IMAGE, "#previewImage");
+    selector!(PREVIEW_IMAGE_MAIN, "#previewImageMain");
     selector!(ITEM_TITLE, ".workshopItemTitle");
     selector!(BREADCRUMBS, ".breadcrumbs");
     selector!(DESCRIPTION, ".workshopItemDescription");
@@ -363,12 +364,13 @@ fn parse_document(doc: scraper::Html) -> Result<WorkshopFile, error::Error> {
         time_created
     };
 
-    let preview_image =
-        doc.select(&selectors::PREVIEW_IMAGE)
-            .next()
-            .ok_or(error::Error::parse_error(
-                "Document is missing preview image",
-            ))?;
+    let preview_image = doc
+        .select(&selectors::PREVIEW_IMAGE)
+        .next()
+        .or_else(|| doc.select(&selectors::PREVIEW_IMAGE_MAIN).next())
+        .ok_or(error::Error::parse_error(
+            "Document is missing preview image",
+        ))?;
     let preview_image_url = preview_image.attr("src").ok_or(error::Error::parse_error(
         "Preview image is missing its source",
     ))?;
