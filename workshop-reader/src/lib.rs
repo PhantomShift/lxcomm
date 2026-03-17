@@ -351,13 +351,17 @@ fn parse_document(doc: scraper::Html) -> Result<WorkshopFile, error::Error> {
     };
 
     let stats_right: Vec<_> = doc.select(&selectors::DETAILS_STATS_RIGHT).collect();
-    if stats_right.len() != 3 {
+    if !(2..=3).contains(&stats_right.len()) {
         return Err(error::Error::new(error::ErrorKind::ParseError)
             .msg("Unexpected number of stats contained in stats container"));
     }
     let file_size = stats_right[0].inner_html();
     let time_created = parse_time(&stats_right[1].inner_html())?;
-    let time_updated = parse_time(&stats_right[2].inner_html())?;
+    let time_updated = if stats_right.len() == 3 {
+        parse_time(&stats_right[2].inner_html())?
+    } else {
+        time_created
+    };
 
     let preview_image =
         doc.select(&selectors::PREVIEW_IMAGE)
