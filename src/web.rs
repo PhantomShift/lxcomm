@@ -429,9 +429,7 @@ impl std::hash::Hash for WorkshopQuery {
 impl WorkshopQuery {
     pub fn new<S: Into<String>>(query: S) -> Self {
         Self {
-            query: query
-                .into()
-                .replace(|ch: char| ch.is_ascii_whitespace(), "+"),
+            query: query.into(),
             ..Default::default()
         }
     }

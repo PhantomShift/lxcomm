@@ -51,6 +51,7 @@ use crate::{
     extensions::Truncatable,
     files::ModDetails,
     library::LibraryItem,
+    no_api::browser::CacheProvider,
     platform::symbols,
     snapshot::SnapshotContainer,
     widgets::{AsyncDialog, AsyncDialogField},
@@ -1303,7 +1304,25 @@ impl App {
             Message::SetViewingItem(id) => {
                 self.modal_stack
                     .push(AppModal::ItemDetailedView(id.clone()));
-                if let Some(ModDetails::Workshop(info)) = self.file_cache.get_details(&id) {
+                if let ModId::Workshop(id) = id
+                    && let Some(file) = self.noapi_browser.cache().get_item(id as u64)
+                {
+                    if self.markup_cache.get_scraped(id as u64).is_none()
+                        && let Some(description) = file.file_description.as_ref()
+                    {
+                        let html = scraper::Html::parse_fragment(description);
+                        if let Some(desc) =
+                            html.select(&workshop_reader::selectors::DESCRIPTION).next()
+                        {
+                            match workshop_reader::descriptions::process_description(desc) {
+                                Ok(items) => self.markup_cache.cache_scraped(id as u64, items),
+                                Err(err) => eprintln!(
+                                    "Failed to process item description for {id}: {err:?}"
+                                ),
+                            }
+                        }
+                    }
+                } else if let Some(ModDetails::Workshop(info)) = self.file_cache.get_details(&id) {
                     self.markup_cache.cache_markup(info.get_description());
 
                     let unknown = info
@@ -3473,23 +3492,19 @@ impl App {
                 .then_some(Message::SteamCMDDownloadRequested(id))
         }));
 
-        let tags = if let Some(item) = self.library.items.get(id) {
-            let metadata = self.file_cache.get_metadata(&item.path);
-            println!("Metadata: {metadata:?}");
-            &mut metadata.tags.into_iter() as &mut dyn Iterator<Item = metadata::Tag>
-        } else {
-            &mut file
-                .tags()
+        let tags: Vec<_> = if let Some(item) = self.library.items.get(id) {
+            self.file_cache
+                .get_metadata(&item.path)
+                .tags
                 .iter()
-                .map(|tag| metadata::Tag::from(tag.tag.as_str()))
-                as &mut dyn Iterator<Item = metadata::Tag>
+                .map(|t| Element::new(iced_aw::badge(text(t.to_string()))))
+                .collect()
+        } else {
+            file.tags()
+                .iter()
+                .map(|t| Element::new(iced_aw::badge(text(t.display_name.clone()))))
+                .collect()
         };
-        let tags = tags
-            .map(|tag| {
-                println!("Tag: {tag}");
-                Element::new(iced_aw::badge(text(tag.to_string())))
-            })
-            .collect::<Vec<_>>();
 
         container(
             container(column![
@@ -3598,6 +3613,167 @@ impl App {
                             )
                             .map(web::handle_url),
                         )
+                        .width(Fill)
+                        .padding(8)
+                        .style(container::dark)
+                    )
+                    .height(Fill),
+                    row![
+                        button("Back")
+                            .style(button::danger)
+                            .on_press(Message::CloseModal),
+                    ]
+                ]
+                .spacing(4)
+                .padding(16),
+            ])
+            .style(container::dark)
+            .style(container::rounded_box)
+            .padding(16),
+        )
+        .center(Fill)
+        .width(Fill)
+        .padding(32)
+        .into()
+    }
+
+    fn view_item_scraped<'a>(&'a self, id: u64) -> Element<'a, Message> {
+        let Some(file) = self.noapi_browser.cache().get_item(id) else {
+            return container(
+                column![
+                    text("Failed to load details"),
+                    space::vertical(),
+                    row![
+                        space::horizontal(),
+                        button("Close")
+                            .style(button::danger)
+                            .on_press(Message::CloseModal)
+                    ],
+                ]
+                .height(Fill)
+                .width(Fill),
+            )
+            .style(container::rounded_box)
+            .into();
+        };
+
+        let download_button = if self.item_downloaded(id as u32) {
+            button("Update")
+        } else {
+            button("Download")
+        }
+        .on_press_maybe(
+            self.is_downloading(id as u32)
+                .not()
+                .then_some(Message::SteamCMDDownloadRequested(id as u32)),
+        );
+
+        let tags: Vec<_> = file
+            .tags
+            .iter()
+            .map(|t| Element::new(iced_aw::badge(text(t.to_string()))))
+            .collect();
+
+        container(
+            container(column![
+                row![
+                    web::image_from_source(
+                        &self.images,
+                        ImageSource::Web(file.preview_url.clone()),
+                    )
+                    .height(256)
+                    .width(256)
+                    .padding(16),
+                    column![
+                        text(file.title.clone()).size(18),
+                        file.creator.parse::<u64>().ok().map(|creator| {
+                            tooltip!(rich_text([text::Span::new("Author: "), text::Span::new(web::get_user_display_name(steam_rs::Steam::new(self.api_key.expose_secret()), creator)).link(creator)]).on_link_click(|id: u64| {
+                                web::open_browser(format!("https://steamcommunity.com/profiles/{id}/myworkshopfiles/?appid={XCOM_APPID}"))
+                            }), "Open in Browser")
+                        }),
+                            tooltip!(
+                                rich_text([text::Span::new(id.to_string()).link(id)]).on_link_click(|id: u64| {
+                                    web::open_browser(format!("https://steamcommunity.com/sharedfiles/filedetails/?id={id}"))
+                                }),
+                                "Open in Browser",
+                            ),
+                        text!("{:.2} out of 10", file.get_score() * 10.0),
+                    ]
+                    .push(file.children.is_empty().not().then(|| {
+                        row!["Dependencies -"]
+                            .extend(file.children.iter().map(|child| {
+                                let child_id = *child as u32;
+                                if let Some(details) =
+                                    self.file_cache.get_details(ModId::from(child_id))
+                                {
+                                    row![
+                                        rich_text([span(format!(
+                                            "{} ({child_id}) ",
+                                            details.title()
+                                        ))
+                                        .link(child_id)])
+                                        .on_link_click(Message::SetViewingItem),
+                                        if self.item_downloaded(child_id) {
+                                            symbols::check()
+                                        } else {
+                                            symbols::xmark()
+                                        },
+                                    ]
+                                } else {
+                                    row![text!("UNKNOWN ({child_id})")]
+                                }
+                                .into()
+                            }))
+                            .spacing(8)
+                            .wrap()
+                    }))
+                    .push(row![
+                        download_button,
+                        button("Add to Profile").on_press_with(move || {
+                            Message::ItemDetailsAddToLibraryRequest(vec![(id as u32).into()])
+                        }),
+                    ])
+                    .push(row![
+                        file.children.is_empty().not().then_some(
+                            button("Download All Dependencies")
+                                .on_press(Message::DownloadAllRequested(id as u32))
+                        ),
+                        button("Add All Dependencies to Profile")
+                            .on_press(Message::ItemDetailsAddToLibraryAllRequest(id as u32))
+                    ])
+                    .push(
+                        self.item_downloaded(id as u32).then_some(
+                            button("Delete")
+                                .style(button::danger)
+                                .on_press(Message::DeleteRequested(id as u32)),
+                        )
+                    )
+                    .push(
+                        tags.is_empty()
+                            .not()
+                            .then_some(column![text("Tags"), row(tags).spacing(8).wrap()])
+                    ),
+                ],
+                column![
+                    text("Description"),
+                    scrollable(
+                        container({
+                            let settings = markdown::Settings::with_style(markdown::Style::from_palette(
+                                        self.theme().palette()
+                                    ));
+                            if let Some(items) = self.markup_cache.get_scraped(id) {
+                                row(items.iter().map(|item| markup::view_scraped(item, settings, web::handle_url)))
+                                    .wrap().into()
+                            } else {
+                                markdown(
+                                    self.markup_cache
+                                        .get_markup(file.get_description())
+                                        .unwrap_or_default(),
+                                    settings,
+                                )
+                                .map(web::handle_url)
+                            }
+                        })
                         .width(Fill)
                         .padding(8)
                         .style(container::dark)
@@ -3792,7 +3968,13 @@ impl App {
                             ]).style(container::rounded_box).height(Fill).width(Fill)).padding(16).into()
                         }
                         AppModal::AddToProfileRequest(ids) => self.add_to_profile_modal(ids),
-                        AppModal::ItemDetailedView(id) => self.view_item_detailed(id),
+                        AppModal::ItemDetailedView(id) => {
+                            if let Some(id) = id.maybe_workshop() {
+                                self.view_item_scraped(id as u64)
+                            } else {
+                                self.view_item_detailed(id)
+                            }
+                        },
                         AppModal::CollectionDetailedView(source) => self.collections.view_collection_detailed(self, source),
                         AppModal::AsyncDialog(dialog) => dialog.view().max_width(512.0).into(),
                         dialog @ AppModal::AsyncChoose {

@@ -4,6 +4,7 @@ use std::{
 };
 
 use chrono::{Datelike, NaiveDateTime};
+use scraper::Element;
 use strum::VariantArray;
 
 #[macro_use]
@@ -11,7 +12,7 @@ extern crate markup5ever;
 
 pub mod descriptions;
 
-mod selectors {
+pub mod selectors {
     use std::sync::LazyLock;
 
     use scraper::Selector;
@@ -33,6 +34,7 @@ mod selectors {
     selector!(STATS_TABLE, ".stats_table");
     selector!(REQUIRED_ITEMS, "#RequiredItems");
     selector!(RIGHT_DETAILS_BLOCK, ".rightDetailsBlock");
+    selector!(FILE_RATING_DETAILS, ".fileRatingDetails");
     selector!(WORKSHOP_TAGS, ".workshopTags");
 
     // Workshop browse page selectors
@@ -132,6 +134,7 @@ pub struct WorkshopFile {
     pub favorited: u64,
     pub children: Arc<[u64]>,
     pub tags: Arc<[String]>,
+    pub score: u8,
 }
 
 #[derive(Debug, Clone, Copy, Default, Hash, PartialEq, Eq, PartialOrd, Ord, VariantArray)]
@@ -388,7 +391,7 @@ fn parse_document(doc: scraper::Html) -> Result<WorkshopFile, error::Error> {
     let file_description = doc
         .select(&selectors::DESCRIPTION)
         .next()
-        .map(|el| el.inner_html());
+        .map(|el| el.html());
 
     let mut pop_stats = doc
         .select(&selectors::STATS_TABLE)
@@ -438,6 +441,28 @@ fn parse_document(doc: scraper::Html) -> Result<WorkshopFile, error::Error> {
 
     let tags = Arc::from_iter(builtin_tags.chain(custom_tags).filter(|t| !t.is_empty()));
 
+    let score = doc
+        .select(&selectors::FILE_RATING_DETAILS)
+        .next()
+        .and_then(|e| e.first_element_child())
+        .and_then(|el| el.attr("src"))
+        .and_then(|src| reqwest::Url::parse(src).ok())
+        .and_then(|url| {
+            url.path_segments()
+                .into_iter()
+                .flatten()
+                .last()
+                .map(|file_name| match file_name {
+                    "5-star_large.png" => 5,
+                    "4-star_large.png" => 4,
+                    "3-star_large.png" => 3,
+                    "2-star_large.png" => 2,
+                    "1-star_large.png" => 1,
+                    _ => 0,
+                })
+        })
+        .unwrap_or(0);
+
     Ok(WorkshopFile {
         published_file_id: 0,
         creator,
@@ -451,6 +476,7 @@ fn parse_document(doc: scraper::Html) -> Result<WorkshopFile, error::Error> {
         favorited,
         children,
         tags,
+        score,
     })
 }
 

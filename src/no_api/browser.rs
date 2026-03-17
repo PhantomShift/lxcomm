@@ -6,6 +6,8 @@ use workshop_reader::{self, PageProvider};
 
 use crate::{XCOM_APPID, reset_scroll, web};
 
+static CLIENT_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+
 pub trait CacheProvider: Clone {
     fn get_item(&self, id: u64) -> Option<Arc<workshop_reader::WorkshopFile>>;
     fn get_search(&self, query: &str) -> Option<Arc<workshop_reader::QueryResult>>;
@@ -300,6 +302,10 @@ impl WorkshopItemsBrowser<DefaultCacheProvider> {
         Self::default()
     }
 
+    pub fn cache(&self) -> DefaultCacheProvider {
+        self.client.cache.clone()
+    }
+
     pub fn get_items(
         &self,
     ) -> impl Iterator<Item = &<Self as crate::browser::WorkshopBrowser>::Item> {
@@ -364,7 +370,7 @@ impl WorkshopItemsBrowser<DefaultCacheProvider> {
             }
 
             WorkshopClientMessage::ResolveQuery(resolved) => {
-                let task = Task::batch(resolved.items.iter().filter_map(|item| {
+                let image_task = Task::batch(resolved.items.iter().filter_map(|item| {
                     let url = item.preview_url.clone();
                     images.contains_key(&item.preview_url).not().then(|| {
                         Task::future(async move {
@@ -382,9 +388,25 @@ impl WorkshopItemsBrowser<DefaultCacheProvider> {
                         })
                     })
                 }));
+
+                let resolve_task = Task::batch(resolved.items.iter().filter_map(|item| {
+                    let id = item.id;
+                    self.client.cache.items.contains_key(&id).not().then(|| {
+                        let client = self.client.clone();
+                        Task::future(async move {
+                            if let Err(err) = client.request_item_details(id).await {
+                                eprintln!(
+                                    "Error attempting to resolve file details for {id}: {err:?}"
+                                );
+                            }
+                            crate::Message::None
+                        })
+                    })
+                }));
+
                 self.client.max_page = resolved.pages;
                 self.query_result = Some(resolved);
-                return task;
+                return Task::batch([image_task, resolve_task]);
             }
         }
 
@@ -400,7 +422,10 @@ impl Default for WorkshopItemsBrowser<DefaultCacheProvider> {
                     items: moka::sync::Cache::new(1024),
                     searches: moka::sync::Cache::new(64),
                 },
-                client: reqwest::Client::new(),
+                client: reqwest::ClientBuilder::new()
+                    .user_agent(CLIENT_USER_AGENT)
+                    .build()
+                    .expect("failed to build reqwest client"),
                 rate_limiter: Arc::new(governor::DefaultDirectRateLimiter::direct(
                     governor::Quota::per_minute(unsafe { std::num::NonZero::new_unchecked(10) }),
                 )),

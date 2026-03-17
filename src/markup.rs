@@ -1,7 +1,14 @@
 use std::{collections::HashMap, sync::LazyLock};
 
 use bstr::ByteSlice;
-use iced::widget::markdown::{self, Item};
+use iced::{
+    Font, never,
+    widget::{
+        column, container,
+        markdown::{self, Item},
+        rich_text, row, rule, span, text,
+    },
+};
 use itertools::Itertools;
 
 // Very rudimentary URL detection regex
@@ -12,6 +19,7 @@ static NAIVE_URL_REGEX: LazyLock<fancy_regex::Regex> =
 #[derive(Debug, Default)]
 pub struct MarkupCache {
     cached_results: HashMap<String, Vec<Item>>,
+    scraped_results: HashMap<u64, Vec<workshop_reader::descriptions::Item>>,
 }
 
 impl MarkupCache {
@@ -26,6 +34,14 @@ impl MarkupCache {
 
     pub fn get_markup<S: AsRef<str>>(&self, subject: S) -> Option<&[Item]> {
         self.cached_results.get(subject.as_ref()).map(Vec::as_slice)
+    }
+
+    pub fn cache_scraped(&mut self, id: u64, scraped: Vec<workshop_reader::descriptions::Item>) {
+        self.scraped_results.entry(id).or_insert_with(|| scraped);
+    }
+
+    pub fn get_scraped(&self, id: u64) -> Option<&[workshop_reader::descriptions::Item]> {
+        self.scraped_results.get(&id).map(Vec::as_slice)
     }
 }
 
@@ -215,6 +231,176 @@ pub fn to_markdown<S: AsRef<str>>(subject: S) -> String {
         // Don't know if iced actually handles this
         .replace("[spoiler]", "||")
         .replace("[/spoiler]", "||")
+}
+
+pub fn ordered_list<'a>(
+    items: &'a [workshop_reader::descriptions::Item],
+    settings: markdown::Settings,
+    on_link_clicked: impl Fn(String) -> crate::Message + 'a + Clone,
+) -> iced::Element<'a, crate::Message> {
+    column(items.iter().enumerate().map(|(i, item)| {
+        row![
+            text!("{i}.").size(settings.text_size),
+            view_scraped(
+                item,
+                markdown::Settings {
+                    spacing: settings.spacing * 0.6,
+                    ..settings
+                },
+                on_link_clicked.clone(),
+            ),
+        ]
+        .spacing(settings.spacing)
+        .into()
+    }))
+    .spacing(settings.spacing * 0.75)
+    .padding([0.0, settings.spacing.0])
+    .into()
+}
+
+pub fn unordered_list<'a>(
+    items: &'a [workshop_reader::descriptions::Item],
+    settings: markdown::Settings,
+    on_link_clicked: impl Fn(String) -> crate::Message + 'a + Clone,
+) -> iced::Element<'a, crate::Message> {
+    column(items.iter().map(|item| {
+        row![
+            text!("•").size(settings.text_size),
+            view_scraped(
+                item,
+                markdown::Settings {
+                    spacing: settings.spacing * 0.6,
+                    ..settings
+                },
+                on_link_clicked.clone(),
+            ),
+        ]
+        .spacing(settings.spacing)
+        .into()
+    }))
+    .spacing(settings.spacing * 0.75)
+    .padding([0.0, settings.spacing.0])
+    .into()
+}
+
+pub fn scraped_span<'a>(
+    span: &'a workshop_reader::descriptions::Span,
+    settings: markdown::Settings,
+    on_link_clicked: impl Fn(String) -> crate::Message + 'a,
+) -> iced::Element<'a, crate::Message> {
+    let workshop_reader::descriptions::Span {
+        text,
+        heading,
+        link,
+        underline,
+        strikethrough,
+        bold,
+        italic,
+    } = span;
+
+    let size = if let Some(heading) = heading {
+        match heading {
+            1 => settings.h1_size,
+            2 => settings.h2_size,
+            3 => settings.h3_size,
+            _ => settings.text_size,
+        }
+    } else {
+        settings.text_size
+    };
+
+    let mut font = settings.style.font;
+    if *bold {
+        font.weight = iced::font::Weight::Bold;
+    }
+    if *italic {
+        font.style = iced::font::Style::Italic;
+    }
+
+    let s = iced::widget::span(text)
+        .font(font)
+        .underline(*underline)
+        .strikethrough(*strikethrough)
+        .link_maybe(link.to_owned());
+
+    rich_text![s]
+        .on_link_click(on_link_clicked)
+        .size(size)
+        .into()
+}
+
+pub fn view_scraped<'a>(
+    item: &'a workshop_reader::descriptions::Item,
+    settings: markdown::Settings,
+    on_link_clicked: impl Fn(String) -> crate::Message + 'a + Clone,
+) -> iced::Element<'a, crate::Message> {
+    use workshop_reader::descriptions::Item;
+    match item {
+        Item::Breakline => iced::widget::space::horizontal()
+            .height(settings.text_size)
+            .into(),
+        Item::Rule => rule::horizontal(2).into(),
+        Item::OrderedList(items) => ordered_list(items, settings, on_link_clicked),
+        Item::UnorderedList(items) => unordered_list(items, settings, on_link_clicked),
+        Item::Span(span) => scraped_span(span, settings, on_link_clicked),
+
+        Item::Group(items) => row(items
+            .iter()
+            .map(|item| view_scraped(item, settings, on_link_clicked.clone())))
+        .wrap()
+        .into(),
+        Item::Code(items) => {
+            // In steam bbcode, literally just monospaced text.
+            let mut settings = settings;
+            settings.style.font = settings.style.code_block_font;
+            container(
+                row(items
+                    .iter()
+                    .map(|item| view_scraped(item, settings, on_link_clicked.clone())))
+                .wrap(),
+            )
+            .style(container::bordered_box)
+            .padding(settings.spacing)
+            .into()
+        }
+        Item::Quote { author, items } => container(column![
+            author.as_ref().map(|author| {
+                rich_text![
+                    span("Originally posted by "),
+                    span(author).font(Font {
+                        weight: iced::font::Weight::Bold,
+                        ..settings.style.font
+                    })
+                ]
+                .on_link_click(never)
+            }),
+            row(items
+                .iter()
+                .map(|item| view_scraped(item, settings, on_link_clicked.clone())))
+            .wrap(),
+        ])
+        .style(container::bordered_box)
+        .padding(settings.spacing)
+        .into(),
+
+        Item::Table(table) => {
+            let mut irows = table.iter();
+
+            let cols = irows.next().into_iter().flatten().map(|item| {
+                iced::widget::table::column(
+                    view_scraped(item, settings, on_link_clicked.clone()),
+                    |i: &Item| view_scraped(i, settings, on_link_clicked.clone()),
+                )
+            });
+            let rows = irows.flatten();
+
+            iced::widget::table(cols, rows).into()
+        }
+
+        Item::TableRow | Item::TableItem(_) => {
+            unreachable!("table items should only be present during parsing")
+        }
+    }
 }
 
 #[test]

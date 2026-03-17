@@ -239,6 +239,7 @@ pub struct Cache {
 #[derive(Debug, Clone)]
 pub enum ModDetails {
     Workshop(Arc<query_files::File>),
+    WorkshopNoAPI(Arc<workshop_reader::WorkshopFile>),
     Local(xcom_mod::ModMetadata),
 }
 
@@ -246,6 +247,7 @@ impl ModDetails {
     pub fn title(&self) -> &str {
         match self {
             Self::Workshop(details) => &details.title,
+            Self::WorkshopNoAPI(details) => &details.title,
             Self::Local(details) => &details.title,
         }
     }
@@ -253,6 +255,7 @@ impl ModDetails {
     pub fn children(&self) -> &[query_files::ChildFile] {
         match self {
             Self::Workshop(details) => details.children.as_slice(),
+            Self::WorkshopNoAPI(_details) => todo!("switch children to just a slice of ids"),
             Self::Local(_) => &[],
         }
     }
@@ -261,6 +264,7 @@ impl ModDetails {
     pub fn tags(&self) -> &[query_files::Tag] {
         match self {
             Self::Workshop(details) => details.tags.as_slice(),
+            Self::WorkshopNoAPI(details) => todo!("parse tags"),
             Self::Local(_) => &[],
         }
     }
@@ -268,6 +272,7 @@ impl ModDetails {
     pub fn maybe_workshop(&self) -> Option<Arc<query_files::File>> {
         match self {
             Self::Workshop(details) => Some(details.to_owned()),
+            Self::WorkshopNoAPI(_) => None,
             Self::Local(_) => None,
         }
     }

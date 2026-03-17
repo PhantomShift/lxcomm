@@ -23,6 +23,16 @@ impl DetailsExtension for steam_rs::published_file_service::query_files::File {
     }
 }
 
+impl DetailsExtension for workshop_reader::WorkshopFile {
+    fn get_description(&self) -> &str {
+        self.file_description.as_ref().map_or("", |s| s.as_str())
+    }
+
+    fn get_score(&self) -> f32 {
+        self.score as f32 / 5.0
+    }
+}
+
 impl DetailsExtension for xcom_mod::ModMetadata {
     fn get_description(&self) -> &str {
         &self.description
@@ -37,6 +47,7 @@ impl DetailsExtension for files::ModDetails {
     fn get_description(&self) -> &str {
         match self {
             Self::Workshop(details) => details.get_description(),
+            Self::WorkshopNoAPI(details) => details.get_description(),
             Self::Local(details) => details.get_description(),
         }
     }
@@ -44,6 +55,7 @@ impl DetailsExtension for files::ModDetails {
     fn get_score(&self) -> f32 {
         match self {
             Self::Workshop(details) => details.get_score(),
+            Self::WorkshopNoAPI(details) => details.get_score(),
             Self::Local(details) => details.get_score(),
         }
     }

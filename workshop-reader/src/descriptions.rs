@@ -36,8 +36,8 @@ impl Item {
     fn push_item(&mut self, value: Self) {
         match self {
             Self::TableItem(items) => items.push(value),
-            Self::OrderedList(list) => list.push(value),
-            Self::UnorderedList(list) => list.push(value),
+            Self::OrderedList(list) if !matches!(value, Item::Breakline) => list.push(value),
+            Self::UnorderedList(list) if !matches!(value, Item::Breakline) => list.push(value),
             Self::Quote { author: _, items } => items.push(value),
             Self::Code(list) => list.push(value),
             _ => (),
@@ -207,7 +207,10 @@ pub fn process_description(
                                             }
                                         }
                                     }
-                                    "bb_h1" | "bb_h2" | "bb_h3" => heading = 0,
+                                    "bb_h1" | "bb_h2" | "bb_h3" => {
+                                        push_item!(Item::Breakline);
+                                        heading = 0;
+                                    }
                                     _ => (),
                                 }
                             }
