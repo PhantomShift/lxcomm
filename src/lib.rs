@@ -1101,6 +1101,8 @@ impl App {
         // Additional startup tasks
         app.trim_snapshots();
         app.trim_image_cache();
+        app.noapi_browser
+            .set_lifetime(app.settings.steam_webapi_cache_lifetime);
 
         // Potential TODO: turn this into an asynchronous task to prevent UI lockup on extremely large libraries
         app.scan_downloads();
@@ -3234,6 +3236,11 @@ impl App {
 
                 if old.steam_webapi_api_key != self.settings.steam_webapi_api_key {
                     self.api_key = SecretString::from(self.settings.steam_webapi_api_key.as_str());
+                }
+
+                if old.steam_webapi_cache_lifetime != self.settings.steam_webapi_cache_lifetime {
+                    self.noapi_browser
+                        .set_lifetime(self.settings.steam_webapi_cache_lifetime);
                 }
 
                 if let Some(state) = Arc::get_mut(&mut self.steamcmd_state) {

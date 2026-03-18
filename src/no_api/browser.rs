@@ -1,4 +1,10 @@
-use std::{collections::HashMap, ops::Not, str::FromStr, sync::Arc};
+use std::{
+    collections::HashMap,
+    ops::Not,
+    path::PathBuf,
+    str::FromStr,
+    sync::{Arc, LazyLock},
+};
 
 use apply::Apply;
 use iced::Task;
@@ -7,6 +13,13 @@ use workshop_reader::{self, PageProvider};
 use crate::{XCOM_APPID, reset_scroll, web};
 
 static CLIENT_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+static WEBCACHE_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
+    let path = crate::CACHE_DIR.join("noapi_webcache");
+    if !path.exists() {
+        std::fs::create_dir_all(&path).expect("cache directory should be writable");
+    }
+    path
+});
 
 pub trait CacheProvider: Clone {
     fn get_item(&self, id: u64) -> Option<Arc<workshop_reader::WorkshopFile>>;
@@ -42,10 +55,12 @@ pub struct WorkshopClient<C: CacheProvider = DefaultCacheProvider> {
     cache: C,
     client: reqwest::Client,
     rate_limiter: Arc<governor::DefaultDirectRateLimiter>,
+    webcache: super::webcache::WebCache,
 
     query: workshop_reader::QueryParams,
     page: u32,
     max_page: u32,
+    lifetime: u32,
 }
 
 impl<C> workshop_reader::PageProvider for WorkshopClient<C>
@@ -55,9 +70,20 @@ where
     type Error = reqwest::Error;
 
     async fn request_page(&self, url: String) -> Result<String, Self::Error> {
+        let limit = chrono::Utc::now() - std::time::Duration::from_secs(self.lifetime as u64);
+        if let Some(cached) = self.webcache.get_entry_after(&url, limit) {
+            return Ok(cached.page);
+        }
+
         self.rate_limiter.until_ready().await;
         let response = self.client.get(&url).send().await?;
-        response.text().await
+        let body = response.text().await?;
+
+        if let Err(err) = self.webcache.cache_page(&url, &body) {
+            eprintln!("Failed to write page to disk cache: {err:?}");
+        }
+
+        Ok(body)
     }
 
     async fn request_item_details(
@@ -306,6 +332,25 @@ impl WorkshopItemsBrowser<DefaultCacheProvider> {
         self.client.cache.clone()
     }
 
+    pub fn clear_cache(&self) {
+        self.client.cache.items.invalidate_all();
+        self.client.cache.items.invalidate_all();
+        if let Err(err) = self.client.webcache.clear() {
+            eprintln!("Error clearing web cache: {err:?}");
+        }
+    }
+
+    pub fn set_lifetime(&mut self, lifetime: u32) {
+        if lifetime > 0 {
+            self.client.lifetime = lifetime;
+        } else {
+            self.client.lifetime = crate::web::DEFAULT_CACHE_TIME;
+        }
+        self.client
+            .webcache
+            .set_lifetime(self.client.lifetime as u64);
+    }
+
     pub fn get_items(
         &self,
     ) -> impl Iterator<Item = &<Self as crate::browser::WorkshopBrowser>::Item> {
@@ -426,12 +471,16 @@ impl Default for WorkshopItemsBrowser<DefaultCacheProvider> {
                     .user_agent(CLIENT_USER_AGENT)
                     .build()
                     .expect("failed to build reqwest client"),
-                rate_limiter: Arc::new(governor::DefaultDirectRateLimiter::direct(
-                    governor::Quota::per_minute(unsafe { std::num::NonZero::new_unchecked(10) }),
-                )),
+                rate_limiter: Arc::new(governor::DefaultDirectRateLimiter::direct(unsafe {
+                    governor::Quota::per_minute(std::num::NonZero::new_unchecked(8))
+                        .allow_burst(std::num::NonZero::new_unchecked(4))
+                })),
+                webcache: super::webcache::WebCache::new(WEBCACHE_DIR.clone())
+                    .expect("failed to initialize webcache"),
                 query: Default::default(),
                 page: 0,
                 max_page: 0,
+                lifetime: crate::web::DEFAULT_CACHE_TIME,
             },
             edit_query: Default::default(),
             edit_period: Default::default(),

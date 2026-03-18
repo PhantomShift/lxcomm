@@ -32,8 +32,8 @@ use strum::VariantArray;
 use tokio::io::AsyncWriteExt;
 
 // Cache valid for 1 day
-const DEFAULT_CACHE_TIME: u32 = 86400;
-const PROFILE_SUMMARY_CACHE_TIME: u32 = 86400 * 7;
+pub const DEFAULT_CACHE_TIME: u32 = 86400;
+pub const PROFILE_SUMMARY_CACHE_TIME: u32 = 86400 * 7;
 
 pub static IMAGE_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
     let dir = CACHE_DIR.join("images");
