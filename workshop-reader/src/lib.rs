@@ -286,7 +286,12 @@ pub trait PageProvider {
                 .request_page_wrapped(Self::build_item_url(published_file_id))
                 .await?;
 
-            Self::parse_item(&page).map(Arc::new)
+            Self::parse_item(&page)
+                .map(|f| WorkshopFile {
+                    published_file_id,
+                    ..f
+                })
+                .map(Arc::new)
         }
     }
 

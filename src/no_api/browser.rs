@@ -100,9 +100,15 @@ where
             let page = self
                 .request_page_wrapped(Self::build_item_url(published_file_id))
                 .await?;
-            Self::parse_item(&page).map(Arc::new).inspect(|arc| {
-                self.cache.set_item(published_file_id, arc.clone());
-            })
+            Self::parse_item(&page)
+                .map(|f| workshop_reader::WorkshopFile {
+                    published_file_id,
+                    ..f
+                })
+                .map(Arc::new)
+                .inspect(|arc| {
+                    self.cache.set_item(published_file_id, arc.clone());
+                })
         }
     }
 
