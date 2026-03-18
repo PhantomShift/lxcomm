@@ -152,7 +152,7 @@ pub enum WorkshopClientMessage {
 
 impl From<WorkshopClientMessage> for crate::Message {
     fn from(value: WorkshopClientMessage) -> Self {
-        Self::WorksopMessageNoAPI(value)
+        Self::WorkshopMessageNoAPI(value)
     }
 }
 

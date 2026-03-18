@@ -307,7 +307,7 @@ pub enum Message {
 
     // Web-related
     ImageLoaded(String, image::Handle),
-    WorksopMessageNoAPI(no_api::browser::WorkshopClientMessage),
+    WorkshopMessageNoAPI(no_api::browser::WorkshopClientMessage),
 
     #[default]
     None,
@@ -3186,7 +3186,7 @@ impl App {
                 self.launch_log = text_editor::Content::new();
             }
 
-            Message::WorksopMessageNoAPI(msg) => {
+            Message::WorkshopMessageNoAPI(msg) => {
                 return self.noapi_browser.update(&self.images, msg);
             }
 
