@@ -51,7 +51,7 @@ pub mod error {
     #[derive(Debug)]
     pub enum ErrorKind {
         ChronoParseError(chrono::ParseError),
-        RequestError(Box<dyn std::error::Error>),
+        RequestError(Box<dyn std::error::Error + Send>),
         MissingFile,
         ParseError,
     }
@@ -225,7 +225,7 @@ pub struct QueryResult {
 }
 
 pub trait PageProvider {
-    type Error: std::error::Error + 'static;
+    type Error: std::error::Error + Send + 'static;
 
     fn build_item_url(id: u64) -> String {
         format!("https://steamcommunity.com/sharedfiles/filedetails/?id={id}&l=english")

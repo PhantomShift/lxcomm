@@ -1,7 +1,7 @@
 use ego_tree::iter::Edge;
 
 /// A span representing the styles applied to a given section of text
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Span {
     pub text: String,
     pub heading: Option<u8>,
@@ -12,7 +12,7 @@ pub struct Span {
     pub italic: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Item {
     Breakline,
     Rule,

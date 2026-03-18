@@ -308,6 +308,7 @@ pub enum Message {
     // Web-related
     ImageLoaded(String, image::Handle),
     WorkshopMessageNoAPI(no_api::browser::WorkshopClientMessage),
+    NoAPIDescriptionProcessed(u64, Vec<workshop_reader::descriptions::Item>),
 
     #[default]
     None,
@@ -1324,61 +1325,93 @@ impl App {
                             }
                         }
                     }
-                } else if let Some(ModDetails::Workshop(info)) = self.file_cache.get_details(&id) {
-                    self.markup_cache.cache_markup(info.get_description());
+                // } else if let Some(ModDetails::Workshop(info)) = self.file_cache.get_details(&id) {
+                //     self.markup_cache.cache_markup(info.get_description());
 
-                    let unknown = info
-                        .children
-                        .iter()
-                        .filter_map(|c| {
-                            let id = c
-                                .published_file_id
-                                .parse::<u32>()
-                                .expect("ids should be numbers");
-                            self.file_cache
-                                .get_details(ModId::Workshop(id))
-                                .is_none()
-                                .then_some(id)
-                        })
-                        .collect::<Vec<_>>();
+                //     let unknown = info
+                //         .children
+                //         .iter()
+                //         .filter_map(|c| {
+                //             let id = c
+                //                 .published_file_id
+                //                 .parse::<u32>()
+                //                 .expect("ids should be numbers");
+                //             self.file_cache
+                //                 .get_details(ModId::Workshop(id))
+                //                 .is_none()
+                //                 .then_some(id)
+                //         })
+                //         .collect::<Vec<_>>();
 
-                    if !unknown.is_empty()
-                        && let Some(mut sender) = self.background_resolver_sender.clone()
-                    {
-                        return Task::batch([
-                            Task::perform(
-                                async move {
-                                    if let Err(err) = sender
-                                        .send(Message::BackgroundResolverMessage(
-                                            web::ResolverMessage::RequestResolve(unknown),
-                                        ))
-                                        .await
-                                    {
-                                        eprintln!(
-                                            "Error sending resolve request to background thread: {err:?}"
-                                        );
-                                    }
-                                },
-                                |()| Message::None,
-                            ),
-                            self.cache_item_image(&info.preview_url),
-                        ]);
-                    } else {
-                        return self.cache_item_image(&info.preview_url);
-                    }
+                //     if !unknown.is_empty()
+                //         && let Some(mut sender) = self.background_resolver_sender.clone()
+                //     {
+                //         return Task::batch([
+                //             Task::perform(
+                //                 async move {
+                //                     if let Err(err) = sender
+                //                         .send(Message::BackgroundResolverMessage(
+                //                             web::ResolverMessage::RequestResolve(unknown),
+                //                         ))
+                //                         .await
+                //                     {
+                //                         eprintln!(
+                //                             "Error sending resolve request to background thread: {err:?}"
+                //                         );
+                //                     }
+                //                 },
+                //                 |()| Message::None,
+                //             ),
+                //             self.cache_item_image(&info.preview_url),
+                //         ]);
+                //     } else {
+                //         return self.cache_item_image(&info.preview_url);
+                //     }
                 } else if let ModId::Workshop(id) = id
                     && let Some(mut sender) = self.background_resolver_sender.clone()
                 {
+                    // return Task::future(async move {
+                    //     if let Err(err) = sender
+                    //         .send(web::ResolverMessage::RequestResolve(vec![id]).into())
+                    //         .await
+                    //     {
+                    //         eprintln!(
+                    //             "Error sending resolve request to background thread: {err:?}"
+                    //         );
+                    //     }
+                    //     Message::None
+                    // });
+                    let request = self.noapi_browser.request_item_details(id as u64);
                     return Task::future(async move {
-                        if let Err(err) = sender
-                            .send(web::ResolverMessage::RequestResolve(vec![id]).into())
-                            .await
-                        {
-                            eprintln!(
-                                "Error sending resolve request to background thread: {err:?}"
-                            );
+                        match request.await {
+                            Ok(details) => {
+                                if let Some(description) = &details.file_description {
+                                    let html = scraper::Html::parse_fragment(description);
+                                    if let Some(desc) =
+                                        html.select(&workshop_reader::selectors::DESCRIPTION).next()
+                                    {
+                                        match workshop_reader::descriptions::process_description(
+                                            desc,
+                                        ) {
+                                            Ok(items) => {
+                                                // self.markup_cache.cache_scraped(id as u64, items)
+                                                return Message::NoAPIDescriptionProcessed(
+                                                    details.published_file_id,
+                                                    items,
+                                                );
+                                            }
+                                            Err(err) => eprintln!(
+                                                "Failed to process item description for {id}: {err:?}"
+                                            ),
+                                        }
+                                    }
+                                }
+                                Message::None
+                            }
+                            Err(err) => {
+                                Message::display_error("Error Fetching Details", err.to_string())
+                            }
                         }
-                        Message::None
                     });
                 } else if let Some(ModDetails::Local(data)) = self.file_cache.get_details(&id) {
                     self.markup_cache.cache_markup(data.description);
@@ -3160,6 +3193,16 @@ impl App {
             Message::ImageLoaded(id, handle) => {
                 let _ = self.images.insert(id, handle);
             }
+            Message::NoAPIDescriptionProcessed(id, items) => {
+                self.markup_cache.cache_scraped(id, items);
+
+                if let Some(modal) = self.modal_stack.last()
+                    && *modal == AppModal::ItemDetailedView((id as u32).into())
+                {
+                    return Task::done(Message::CloseModal)
+                        .chain(Task::done(Message::SetViewingItem((id as u32).into())));
+                }
+            }
 
             Message::LaunchLogAction(action) => match action {
                 text_editor::Action::Edit(_) => (),
@@ -3648,7 +3691,9 @@ impl App {
         let Some(file) = self.noapi_browser.cache().get_item(id) else {
             return container(
                 column![
-                    text("Failed to load details"),
+                    space::vertical(),
+                    iced_aw::Spinner::new(),
+                    text("Loading item details..."),
                     space::vertical(),
                     row![
                         space::horizontal(),
@@ -3657,6 +3702,7 @@ impl App {
                             .on_press(Message::CloseModal)
                     ],
                 ]
+                .align_x(Center)
                 .height(Fill)
                 .width(Fill),
             )

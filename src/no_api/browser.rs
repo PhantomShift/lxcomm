@@ -371,6 +371,16 @@ impl WorkshopItemsBrowser<DefaultCacheProvider> {
             .flatten()
     }
 
+    pub fn request_item_details(
+        &self,
+        id: u64,
+    ) -> impl Future<
+        Output = Result<Arc<workshop_reader::WorkshopFile>, workshop_reader::error::Error>,
+    > + 'static {
+        let client = self.client.clone();
+        Box::pin(async move { client.request_item_details(id).await })
+    }
+
     pub fn update(
         &mut self,
         images: &HashMap<String, iced::widget::image::Handle>,
@@ -444,24 +454,9 @@ impl WorkshopItemsBrowser<DefaultCacheProvider> {
                     })
                 }));
 
-                let resolve_task = Task::batch(resolved.items.iter().filter_map(|item| {
-                    let id = item.id;
-                    self.client.cache.items.contains_key(&id).not().then(|| {
-                        let client = self.client.clone();
-                        Task::future(async move {
-                            if let Err(err) = client.request_item_details(id).await {
-                                eprintln!(
-                                    "Error attempting to resolve file details for {id}: {err:?}"
-                                );
-                            }
-                            crate::Message::None
-                        })
-                    })
-                }));
-
                 self.client.max_page = resolved.pages;
                 self.query_result = Some(resolved);
-                return Task::batch([image_task, resolve_task]);
+                return image_task;
             }
         }
 
