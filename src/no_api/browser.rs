@@ -76,6 +76,10 @@ where
         }
 
         self.rate_limiter.until_ready().await;
+        if let Some(cached) = self.webcache.get_entry(&url) {
+            return Ok(cached.page);
+        }
+
         let response = self.client.get(&url).send().await?;
         let body = response.text().await?;
 
