@@ -7939,6 +7939,8 @@ dependencies = [
  "markup5ever",
  "reqwest",
  "scraper",
+ "serde",
+ "serde_json",
  "strum",
  "tokio",
 ]

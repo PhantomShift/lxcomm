@@ -5,6 +5,7 @@ use std::{
 
 use chrono::{Datelike, NaiveDateTime};
 use scraper::Element;
+use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
 #[macro_use]
@@ -222,6 +223,17 @@ pub struct QueryItem {
 pub struct QueryResult {
     pub pages: u32,
     pub items: Arc<[QueryItem]>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WorkshopHoverInfo {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub user_subscribed: bool,
+    pub user_favorited: bool,
+    pub played: bool,
+    pub appid: u64,
 }
 
 pub trait PageProvider {
@@ -535,12 +547,21 @@ fn parse_browse_result(doc: scraper::Html) -> Result<QueryResult, error::Error> 
             })
             .ok_or(error::Error::parse_error("failed to get author ID"))?;
 
-        // eugh but idk a more convenient method
         let short_description = script
             .inner_html()
-            .split_once(r#"description":""#)
-            .and_then(|split| split.1.rsplit_once(r#"","user_subscribed"#))
-            .map(|split| split.0.to_string());
+            .find(r#"{"id":"#)
+            .and_then(|i| {
+                serde_json::from_str(
+                    script
+                        .inner_html()
+                        .split_off(i)
+                        .trim()
+                        .trim_end_matches(");"),
+                )
+                .inspect_err(|e| eprintln!("Failed to parse hover json: {e:?}"))
+                .ok()
+            })
+            .map(|h: WorkshopHoverInfo| h.description);
 
         items.push(QueryItem {
             id: item
