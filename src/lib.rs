@@ -307,7 +307,12 @@ pub enum Message {
 
     // Web-related
     ImageLoaded(String, image::Handle),
-    WorkshopMessageNoAPI(no_api::browser::WorkshopClientMessage),
+    WorkshopMessageBrowseItemNoAPI(
+        no_api::browser::WorkshopClientMessage<workshop_reader::QueryItem>,
+    ),
+    WorkshopMessageBrowseCollectionNoAPI(
+        no_api::browser::WorkshopClientMessage<workshop_reader::QueryCollection>,
+    ),
     NoAPIDescriptionProcessed(u64, Vec<workshop_reader::descriptions::Item>),
 
     #[default]
@@ -540,7 +545,14 @@ pub struct App {
     launch_log: iced::widget::text_editor::Content,
     collections: CollectionsState,
 
-    noapi_browser: no_api::browser::WorkshopItemsBrowser<no_api::browser::DefaultCacheProvider>,
+    noapi_item_browser: no_api::browser::WorkshopBrowser<
+        no_api::browser::DefaultCacheProvider,
+        workshop_reader::QueryItem,
+    >,
+    noapi_collection_browser: no_api::browser::WorkshopBrowser<
+        no_api::browser::DefaultCacheProvider,
+        workshop_reader::QueryCollection,
+    >,
 
     profile_pane_state: widgets::ProfilePaneState,
 }
@@ -1005,6 +1017,11 @@ impl App {
             settings.steamcmd_command_path = String::from("/app/bin/steamcmd");
         }
 
+        let noapi_client =
+            no_api::browser::WorkshopClient::<no_api::browser::DefaultCacheProvider>::new();
+        let noapi_item_browser = no_api::browser::WorkshopBrowser::new(noapi_client.clone());
+        let noapi_collection_browser = no_api::browser::WorkshopBrowser::new(noapi_client.clone());
+
         let mut app = App {
             #[cfg(feature = "dbus")]
             dbus_connection: connection,
@@ -1051,7 +1068,8 @@ impl App {
             launch_log: Default::default(),
             collections: CollectionsState::default(),
 
-            noapi_browser: Default::default(),
+            noapi_item_browser,
+            noapi_collection_browser,
 
             profile_pane_state: Default::default(),
         };
@@ -1102,8 +1120,8 @@ impl App {
         // Additional startup tasks
         app.trim_snapshots();
         app.trim_image_cache();
-        app.noapi_browser
-            .set_lifetime(app.settings.steam_webapi_cache_lifetime);
+        app.noapi_item_browser
+            .set_lifetime(app.settings.steam_webapi_cache_lifetime as u64);
 
         // Potential TODO: turn this into an asynchronous task to prevent UI lockup on extremely large libraries
         app.scan_downloads();
@@ -1308,7 +1326,7 @@ impl App {
                 self.modal_stack
                     .push(AppModal::ItemDetailedView(id.clone()));
                 if let ModId::Workshop(id) = id
-                    && let Some(file) = self.noapi_browser.cache().get_item(id as u64)
+                    && let Some(file) = self.noapi_item_browser.cache().get_item(id as u64)
                 {
                     if self.markup_cache.get_scraped(id as u64).is_none()
                         && let Some(description) = file.file_description.as_ref()
@@ -1381,7 +1399,7 @@ impl App {
                     //     }
                     //     Message::None
                     // });
-                    let request = self.noapi_browser.request_item_details(id as u64);
+                    let request = self.noapi_item_browser.request_item_details(id as u64);
                     return Task::future(async move {
                         match request.await {
                             Ok(details) => {
@@ -3229,8 +3247,11 @@ impl App {
                 self.launch_log = text_editor::Content::new();
             }
 
-            Message::WorkshopMessageNoAPI(msg) => {
-                return self.noapi_browser.update(&self.images, msg);
+            Message::WorkshopMessageBrowseItemNoAPI(msg) => {
+                return self.noapi_item_browser.update(&self.images, msg);
+            }
+            Message::WorkshopMessageBrowseCollectionNoAPI(msg) => {
+                return self.noapi_collection_browser.update(&self.images, msg);
             }
 
             Message::None => (),
@@ -3282,8 +3303,8 @@ impl App {
                 }
 
                 if old.steam_webapi_cache_lifetime != self.settings.steam_webapi_cache_lifetime {
-                    self.noapi_browser
-                        .set_lifetime(self.settings.steam_webapi_cache_lifetime);
+                    self.noapi_item_browser
+                        .set_lifetime(self.settings.steam_webapi_cache_lifetime as u64);
                 }
 
                 if let Some(state) = Arc::get_mut(&mut self.steamcmd_state) {
@@ -3688,7 +3709,7 @@ impl App {
     }
 
     fn view_item_scraped<'a>(&'a self, id: u64) -> Element<'a, Message> {
-        let Some(file) = self.noapi_browser.cache().get_item(id) else {
+        let Some(file) = self.noapi_item_browser.cache().get_item(id) else {
             return container(
                 column![
                     space::vertical(),
@@ -3986,7 +4007,7 @@ impl App {
                     AppPage::Library => self.library_page(),
                     AppPage::Profiles => self.profiles_page(),
                     // AppPage::Browse => self.render_browser(self, self.loaded_files.iter()),
-                    AppPage::Browse => self.noapi_browser.render_browser(self, self.noapi_browser.get_items()),
+                    AppPage::Browse => self.noapi_item_browser.render_browser(self, self.noapi_item_browser.get_items()),
                     AppPage::SteamCMD => self.steamcmd_page(),
                     AppPage::Settings => self.settings_page(),
                     AppPage::Downloads => self.downloads_page(),

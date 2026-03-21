@@ -4,7 +4,7 @@ use std::{
 };
 
 use chrono::{Datelike, NaiveDateTime};
-use scraper::Element;
+use scraper::{Element, ElementRef};
 use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
@@ -38,14 +38,33 @@ pub mod selectors {
     selector!(FILE_RATING_DETAILS, ".fileRatingDetails");
     selector!(WORKSHOP_TAGS, ".workshopTags");
 
-    // Workshop browse page selectors
+    // Workshop item browse page selectors
     selector!(BROWSE_ITEMS, ".workshopBrowseItems");
     selector!(AUTHOR_LINK, ".workshop_author_link");
-    selector!(BROWSE_PREVIEW_IMAGE, ".workshopItemPreviewImage ");
+    selector!(ITEM_PREVIEW_IMAGE, ".workshopItemPreviewImage ");
     selector!(FILE_RATING, ".fileRating");
     selector!(UGC, ".ugc");
     selector!(NO_ITEMS, "#no_items");
     selector!(PAGING_INFO, ".workshopBrowsePagingInfo");
+
+    // Workshop collection page selectors
+    selector!(COLLECTION_ITEM, ".collectionItem");
+    selector!(COLLECTION_ITEM_DETAILS, ".collectionItemDetails");
+    // Assembler name (there is only one assembler, unlike
+    // the situation with items which can have multiple authors)
+    selector!(FRIEND_BLOCK_CONTENT, ".friendBlockContent");
+    // Image
+    selector!(COLLECTION_BACKGROUND_IMAGE, "#CollectionBackgroundImage");
+    // Posted and updated time
+    selector!(RIGHT_DETAILS_CONTAINER, ".detailsStatsContainerRight");
+
+    // Workshop collection item selectors
+    // Author span containing anchor with name
+    selector!(WORKSHOP_AUTHOR_NAME, ".workshopItemAuthorName");
+    selector!(WORKSHOP_SHORT_DESC, ".workshopItemShortDesc");
+
+    // Workshop collection browse page selectors
+    selector!(WORKSHOP_ITEM_COLLECTION, ".workshopItemCollection");
 }
 
 pub mod error {
@@ -138,6 +157,30 @@ pub struct WorkshopFile {
     pub score: u8,
 }
 
+/// Data stored for previewing items in a collection
+#[derive(Debug)]
+pub struct WorkshopCollectionItem {
+    pub id: u64,
+    pub title: String,
+    pub author_name: String,
+    pub short_description: Option<String>,
+    pub preview_url: Option<String>,
+    pub stars: u8,
+}
+
+#[derive(Debug)]
+pub struct WorkshopCollection {
+    pub id: u64,
+    pub title: String,
+    pub assembler_name: String,
+    pub items: Arc<[WorkshopCollectionItem]>,
+    pub preview_url: Option<String>,
+    pub description: Option<String>,
+    pub time_created: u64,
+    pub time_updated: u64,
+    pub stars: u8,
+}
+
 #[derive(Debug, Clone, Copy, Default, Hash, PartialEq, Eq, PartialOrd, Ord, VariantArray)]
 pub enum QueryPeriod {
     Today,
@@ -208,7 +251,7 @@ pub struct QueryParams {
     pub tags: BTreeSet<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct QueryItem {
     pub id: u64,
     pub stars: u8,
@@ -219,10 +262,39 @@ pub struct QueryItem {
     pub short_description: Option<String>,
 }
 
-#[derive(Debug)]
-pub struct QueryResult {
+#[derive(Debug, Clone)]
+pub struct QueryCollection {
+    pub id: u64,
+    pub stars: u8,
+    pub title: String,
+    pub assembler_name: String,
+    pub preview_url: String,
+    pub short_description: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct QueryResult<I> {
     pub pages: u32,
-    pub items: Arc<[QueryItem]>,
+    pub items: Arc<[I]>,
+}
+
+pub type QueryItemResult = QueryResult<QueryItem>;
+pub type QueryCollectionResult = QueryResult<QueryCollection>;
+
+pub trait ItemPreviewImage {
+    fn get_preview_url(&self) -> String;
+}
+
+impl ItemPreviewImage for QueryItem {
+    fn get_preview_url(&self) -> String {
+        self.preview_url.clone()
+    }
+}
+
+impl ItemPreviewImage for QueryCollection {
+    fn get_preview_url(&self) -> String {
+        self.preview_url.clone()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -239,11 +311,15 @@ pub struct WorkshopHoverInfo {
 pub trait PageProvider {
     type Error: std::error::Error + Send + 'static;
 
-    fn build_item_url(id: u64) -> String {
-        format!("https://steamcommunity.com/sharedfiles/filedetails/?id={id}&l=english")
+    fn build_item_url(id: u64) -> reqwest::Url {
+        reqwest::Url::parse_with_params(
+            "https://steamcommunity.com/sharedfiles/filedetails/",
+            [("id", id.to_string().as_str()), ("l", "english")],
+        )
+        .expect("base url should be well formed")
     }
 
-    fn build_browse_url(app_id: u64, page: u32, params: QueryParams) -> String {
+    fn build_browse_url(app_id: u64, page: u32, params: QueryParams) -> reqwest::Url {
         let mut base = reqwest::Url::parse("https://steamcommunity.com/workshop/browse/")
             .expect("base should be a well-formed URL");
         {
@@ -261,26 +337,42 @@ pub trait PageProvider {
             query.append_pair("l", "english");
             query.finish();
         }
-        base.to_string()
+
+        base
+    }
+
+    fn build_collection_browse_url(app_id: u64, page: u32, params: QueryParams) -> reqwest::Url {
+        let mut url = Self::build_browse_url(app_id, page, params);
+        url.query_pairs_mut()
+            .append_pair("section", "collections")
+            .finish();
+        url
     }
 
     fn parse_item(page: &str) -> Result<WorkshopFile, error::Error> {
         parse_document(scraper::Html::parse_document(page))
     }
 
-    fn parse_browse(page: &str) -> Result<QueryResult, error::Error> {
-        let page = scraper::Html::parse_document(page);
-        parse_browse_result(page)
+    fn parse_browse(page: &str) -> Result<QueryItemResult, error::Error> {
+        parse_browse_result(scraper::Html::parse_document(page))
     }
 
-    fn request_page(
+    fn parse_collection(page: &str) -> Result<WorkshopCollection, error::Error> {
+        parse_collection_document(scraper::Html::parse_document(page))
+    }
+
+    fn parse_browse_collection(page: &str) -> Result<QueryCollectionResult, error::Error> {
+        parse_collection_browse(scraper::Html::parse_document(page))
+    }
+
+    fn request_page<U: reqwest::IntoUrl + Send>(
         &self,
-        url: String,
+        url: U,
     ) -> impl std::future::Future<Output = Result<String, Self::Error>> + Send;
 
-    fn request_page_wrapped(
+    fn request_page_wrapped<U: reqwest::IntoUrl + Send>(
         &self,
-        url: String,
+        url: U,
     ) -> impl std::future::Future<Output = Result<String, error::Error>> {
         async move {
             self.request_page(url)
@@ -312,11 +404,39 @@ pub trait PageProvider {
         app_id: u64,
         page: u32,
         params: QueryParams,
-    ) -> impl std::future::Future<Output = Result<Arc<QueryResult>, error::Error>> {
+    ) -> impl std::future::Future<Output = Result<Arc<QueryItemResult>, error::Error>> {
         async move {
             let url = Self::build_browse_url(app_id, page, params);
             let page = self.request_page_wrapped(url).await?;
             Self::parse_browse(&page).map(Arc::new)
+        }
+    }
+
+    fn request_collection_details(
+        &self,
+        id: u64,
+    ) -> impl std::future::Future<Output = Result<Arc<WorkshopCollection>, error::Error>> {
+        async move {
+            let page = self.request_page_wrapped(Self::build_item_url(id)).await?;
+
+            Self::parse_collection(&page)
+                .map(|f| WorkshopCollection { id, ..f })
+                .map(Arc::new)
+        }
+    }
+
+    fn query_collections(
+        &self,
+        app_id: u64,
+        page: u32,
+        params: QueryParams,
+    ) -> impl std::future::Future<Output = Result<Arc<QueryCollectionResult>, error::Error>> {
+        async move {
+            let page = self
+                .request_page_wrapped(Self::build_collection_browse_url(app_id, page, params))
+                .await?;
+
+            Self::parse_browse_collection(&page).map(Arc::new)
         }
     }
 }
@@ -344,6 +464,84 @@ fn parse_time(s: &str) -> Result<u64, error::Error> {
                 )
                 .map(|dt| dt.timestamp() as u64)
         })
+}
+
+fn parse_item_title(doc: &scraper::Html) -> Result<String, error::Error> {
+    doc.select(&selectors::ITEM_TITLE)
+        .next()
+        .map(|e| e.inner_html())
+        .ok_or_else(|| error::Error::parse_error("Missing workshop item title"))
+}
+
+fn find_item_description(doc: &scraper::Html) -> Option<String> {
+    doc.select(&selectors::DESCRIPTION)
+        .next()
+        .map(|el| el.html())
+}
+
+fn parse_score_large(doc: &scraper::Html) -> u8 {
+    doc.select(&selectors::FILE_RATING_DETAILS)
+        .next()
+        .and_then(|e| e.first_element_child())
+        .and_then(|el| el.attr("src"))
+        .and_then(|src| reqwest::Url::parse(src).ok())
+        .and_then(|url| {
+            url.path_segments()
+                .into_iter()
+                .flatten()
+                .last()
+                .map(|file_name| match file_name {
+                    "5-star_large.png" => 5,
+                    "4-star_large.png" => 4,
+                    "3-star_large.png" => 3,
+                    "2-star_large.png" => 2,
+                    "1-star_large.png" => 1,
+                    _ => 0,
+                })
+        })
+        .unwrap_or(0)
+}
+
+fn parse_score_small(el: ElementRef<'_>) -> u8 {
+    el.select(&selectors::FILE_RATING)
+        .next()
+        .and_then(|rating| rating.attr("src"))
+        .and_then(|src| reqwest::Url::parse(src).ok())
+        .and_then(|url| {
+            url.path_segments()
+                .into_iter()
+                .flatten()
+                .last()
+                .map(|file_name| match file_name {
+                    "5-star.png" => 5,
+                    "4-star.png" => 4,
+                    "3-star.png" => 3,
+                    "2-star.png" => 2,
+                    "1-star.png" => 1,
+                    _ => 0,
+                })
+        })
+        .unwrap_or(0)
+}
+
+fn parse_browse_pages(doc: &scraper::Html) -> Result<u32, error::Error> {
+    let paging_info = doc
+        .select(&selectors::PAGING_INFO)
+        .next()
+        .ok_or(error::Error::parse_error("failed to get paging info"))?
+        .inner_html();
+
+    let pages = paging_info
+        .split_once(" of ")
+        .ok_or(error::Error::parse_error("failed to get paging info"))?
+        .1
+        .replace(|c: char| !c.is_ascii_digit(), "")
+        .parse::<u32>()
+        .map_err(|_| error::Error::parse_error("failed to get paging info"))?
+        / 30
+        + 1;
+
+    Ok(pages)
 }
 
 fn parse_document(doc: scraper::Html) -> Result<WorkshopFile, error::Error> {
@@ -399,16 +597,8 @@ fn parse_document(doc: scraper::Html) -> Result<WorkshopFile, error::Error> {
         .map_err(|err| error::Error::parse_error(err.to_string()))?;
     preview_image_url.set_query(None);
 
-    let title = doc
-        .select(&selectors::ITEM_TITLE)
-        .next()
-        .ok_or_else(|| error::Error::parse_error("Missing workshop item title"))?
-        .inner_html();
-
-    let file_description = doc
-        .select(&selectors::DESCRIPTION)
-        .next()
-        .map(|el| el.html());
+    let title = parse_item_title(&doc)?;
+    let file_description = find_item_description(&doc);
 
     let mut pop_stats = doc
         .select(&selectors::STATS_TABLE)
@@ -458,27 +648,7 @@ fn parse_document(doc: scraper::Html) -> Result<WorkshopFile, error::Error> {
 
     let tags = Arc::from_iter(builtin_tags.chain(custom_tags).filter(|t| !t.is_empty()));
 
-    let score = doc
-        .select(&selectors::FILE_RATING_DETAILS)
-        .next()
-        .and_then(|e| e.first_element_child())
-        .and_then(|el| el.attr("src"))
-        .and_then(|src| reqwest::Url::parse(src).ok())
-        .and_then(|url| {
-            url.path_segments()
-                .into_iter()
-                .flatten()
-                .last()
-                .map(|file_name| match file_name {
-                    "5-star_large.png" => 5,
-                    "4-star_large.png" => 4,
-                    "3-star_large.png" => 3,
-                    "2-star_large.png" => 2,
-                    "1-star_large.png" => 1,
-                    _ => 0,
-                })
-        })
-        .unwrap_or(0);
+    let score = parse_score_large(&doc);
 
     Ok(WorkshopFile {
         published_file_id: 0,
@@ -497,29 +667,15 @@ fn parse_document(doc: scraper::Html) -> Result<WorkshopFile, error::Error> {
     })
 }
 
-fn parse_browse_result(doc: scraper::Html) -> Result<QueryResult, error::Error> {
+fn parse_browse_result(doc: scraper::Html) -> Result<QueryItemResult, error::Error> {
     if doc.select(&selectors::NO_ITEMS).next().is_some() {
-        return Ok(QueryResult {
+        return Ok(QueryItemResult {
             pages: 0,
             items: Arc::new([]),
         });
     }
 
-    let paging_info = doc
-        .select(&selectors::PAGING_INFO)
-        .next()
-        .ok_or(error::Error::parse_error("failed to get paging info"))?
-        .inner_html();
-
-    let pages = paging_info
-        .split_once(" of ")
-        .ok_or(error::Error::parse_error("failed to get paging info"))?
-        .1
-        .replace(|c: char| !c.is_ascii_digit(), "")
-        .parse::<u32>()
-        .map_err(|_| error::Error::parse_error("failed to get paging info"))?
-        / 30
-        + 1;
+    let pages = parse_browse_pages(&doc)?;
 
     let Some(browse_items) = doc.select(&selectors::BROWSE_ITEMS).next() else {
         return Err(error::Error::parse_error("failed to find list of items"));
@@ -571,24 +727,7 @@ fn parse_browse_result(doc: scraper::Html) -> Result<QueryResult, error::Error> 
                 .ok_or(error::Error::parse_error("item missing id"))?
                 .parse::<u64>()
                 .map_err(|_| error::Error::parse_error("invalid id"))?,
-            stars: item
-                .select(&selectors::FILE_RATING)
-                .next()
-                .and_then(|rating| rating.attr("src"))
-                .and_then(|src| reqwest::Url::parse(src).ok())
-                .and_then(|url| {
-                    url.path_segments().into_iter().flatten().last().map(
-                        |file_name| match file_name {
-                            "5-star.png" => 5,
-                            "4-star.png" => 4,
-                            "3-star.png" => 3,
-                            "2-star.png" => 2,
-                            "1-star.png" => 1,
-                            _ => 0,
-                        },
-                    )
-                })
-                .unwrap_or(0),
+            stars: parse_score_small(item),
             title: item
                 .select(&selectors::ITEM_TITLE)
                 .next()
@@ -598,7 +737,7 @@ fn parse_browse_result(doc: scraper::Html) -> Result<QueryResult, error::Error> 
             author_id,
             short_description,
             preview_url: item
-                .select(&selectors::BROWSE_PREVIEW_IMAGE)
+                .select(&selectors::ITEM_PREVIEW_IMAGE)
                 .next()
                 .and_then(|img| img.attr("src"))
                 .map(|src| {
@@ -613,9 +752,188 @@ fn parse_browse_result(doc: scraper::Html) -> Result<QueryResult, error::Error> 
         });
     }
 
-    Ok(QueryResult {
+    Ok(QueryItemResult {
         pages,
         items: items.into(),
+    })
+}
+
+fn parse_collection_document(doc: scraper::Html) -> Result<WorkshopCollection, error::Error> {
+    let title = parse_item_title(&doc)?;
+    let description = find_item_description(&doc);
+
+    let assembler_name = doc
+        .select(&selectors::FRIEND_BLOCK_CONTENT)
+        .next()
+        .and_then(|el| el.text().next())
+        .map(str::to_string)
+        .ok_or(error::Error::parse_error("failed to parse assembler name"))?;
+
+    let preview_url = doc
+        .select(&selectors::COLLECTION_BACKGROUND_IMAGE)
+        .next()
+        .and_then(|el| el.attr("src"))
+        .map(str::to_string);
+
+    let details = doc
+        .select(&selectors::RIGHT_DETAILS_CONTAINER)
+        .next_back()
+        .ok_or(error::Error::parse_error(
+            "failed to find upload/update details",
+        ))?;
+    let mut details_iter = details.select(&selectors::DETAILS_STATS_RIGHT);
+    let time_created = details_iter
+        .next()
+        .ok_or(error::Error::parse_error("failed to find post time"))
+        .and_then(|el| parse_time(&el.inner_html()))?;
+    let time_updated = details_iter
+        .next()
+        .map(|el| parse_time(&el.inner_html()))
+        .unwrap_or(Ok(time_created))?;
+
+    let stars = parse_score_large(&doc);
+
+    let items = doc
+        .select(&selectors::COLLECTION_ITEM)
+        .map(parse_collection_item)
+        .collect::<Result<Arc<_>, _>>()?;
+
+    Ok(WorkshopCollection {
+        id: 0,
+        title,
+        assembler_name,
+        items,
+        preview_url,
+        description,
+        time_created,
+        time_updated,
+        stars,
+    })
+}
+
+fn parse_collection_item(el: ElementRef<'_>) -> Result<WorkshopCollectionItem, error::Error> {
+    let url = el
+        .select(&selectors::COLLECTION_ITEM_DETAILS)
+        .next()
+        .and_then(|d| d.first_element_child())
+        .and_then(|a| a.attr("href"))
+        .ok_or(error::Error::parse_error("failed to get id"))
+        .map(reqwest::Url::parse)?
+        .map_err(|_| error::Error::parse_error("failed to parse url for id"))?;
+    let id = url
+        .query_pairs()
+        .find_map(|(k, v)| {
+            if k == "id" {
+                v.parse::<u64>().ok()
+            } else {
+                None
+            }
+        })
+        .ok_or(error::Error::parse_error("failed to find id in url"))?;
+
+    let title = el
+        .select(&selectors::ITEM_TITLE)
+        .next()
+        .and_then(|t| t.text().next())
+        .map(str::trim)
+        .map(str::to_string)
+        .ok_or(error::Error::parse_error("failed to find title"))?;
+
+    let author_name = el
+        .select(&selectors::WORKSHOP_AUTHOR_NAME)
+        .next()
+        .and_then(|a| a.text().next())
+        .map(str::trim)
+        .map(str::to_string)
+        .ok_or(error::Error::parse_error("failed to find author"))?;
+
+    let short_description = el
+        .select(&selectors::WORKSHOP_SHORT_DESC)
+        .next()
+        .and_then(|s| s.text().next())
+        .map(str::trim)
+        .map(str::to_string);
+
+    let preview_url = el
+        .select(&selectors::ITEM_PREVIEW_IMAGE)
+        .next()
+        .and_then(|p| p.attr("src"))
+        .map(str::to_string);
+
+    let stars = parse_score_small(el);
+
+    Ok(WorkshopCollectionItem {
+        id,
+        title,
+        author_name,
+        short_description,
+        preview_url,
+        stars,
+    })
+}
+
+fn parse_collection_browse(doc: scraper::Html) -> Result<QueryCollectionResult, error::Error> {
+    let pages = parse_browse_pages(&doc)?;
+
+    let items = doc
+        .select(&selectors::WORKSHOP_ITEM_COLLECTION)
+        .map(parse_browse_collection_item)
+        .collect::<Result<Arc<[_]>, _>>()?;
+
+    Ok(QueryCollectionResult { pages, items })
+}
+
+fn parse_browse_collection_item(el: ElementRef<'_>) -> Result<QueryCollection, error::Error> {
+    let id = el
+        .attr("data-publishedfileid")
+        .ok_or(error::Error::parse_error("collection item missing id"))
+        .and_then(|s| {
+            s.parse()
+                .map_err(|_| error::Error::parse_error("failed to parse collection id"))
+        })?;
+
+    let stars = parse_score_small(el);
+
+    let title = el
+        .select(&selectors::ITEM_TITLE)
+        .next()
+        .and_then(|t| t.text().next())
+        .map(str::to_string)
+        .ok_or(error::Error::parse_error(
+            "failed to find collection item title",
+        ))?;
+
+    let assembler_name = el
+        .select(&selectors::WORKSHOP_AUTHOR_NAME)
+        .next()
+        .and_then(|a| a.text().next())
+        .map(str::to_string)
+        .ok_or(error::Error::parse_error(
+            "failed to find collection assembler name",
+        ))?;
+
+    let preview_url = el
+        .select(&selectors::ITEM_PREVIEW_IMAGE)
+        .next()
+        .and_then(|i| i.attr("src"))
+        .map(str::to_string)
+        .ok_or(error::Error::parse_error(
+            "failed to get preview image for collection item",
+        ))?;
+
+    let short_description = el
+        .select(&selectors::WORKSHOP_SHORT_DESC)
+        .next()
+        .and_then(|d| d.text().next())
+        .map(str::to_string);
+
+    Ok(QueryCollection {
+        id,
+        stars,
+        title,
+        assembler_name,
+        preview_url,
+        short_description,
     })
 }
 
@@ -634,9 +952,20 @@ mod tests {
         client: reqwest::Client,
     }
 
+    impl TestProvider {
+        fn new() -> Self {
+            Self {
+                client: reqwest::Client::default(),
+            }
+        }
+    }
+
     impl PageProvider for TestProvider {
         type Error = reqwest::Error;
-        async fn request_page(&self, url: String) -> Result<String, Self::Error> {
+        async fn request_page<U: reqwest::IntoUrl + Send>(
+            &self,
+            url: U,
+        ) -> Result<String, Self::Error> {
             let req = self.client.get(url).build()?;
             self.client.execute(req).await?.text().await
         }
@@ -644,9 +973,7 @@ mod tests {
 
     #[tokio::test]
     async fn doc_parse_test() -> Result<(), error::Error> {
-        let provider = TestProvider {
-            client: reqwest::Client::default(),
-        };
+        let provider = TestProvider::new();
 
         let details = provider.request_item_details(1134256495).await?;
         assert_eq!(details.creator, "76561198372527645");
@@ -657,9 +984,7 @@ mod tests {
 
     #[tokio::test]
     async fn browse_parse_test() -> Result<(), error::Error> {
-        let provider = TestProvider {
-            client: reqwest::Client::default(),
-        };
+        let provider = TestProvider::new();
 
         let result = provider
             .query_items(
@@ -667,6 +992,36 @@ mod tests {
                 1,
                 QueryParams {
                     search_text: String::from("highlander"),
+                    sort_method: QuerySort::Trend(QueryPeriod::AllTime),
+                    tags: BTreeSet::new(),
+                },
+            )
+            .await?;
+        println!("{result:#?}");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn collection_parse_test() -> Result<(), error::Error> {
+        const COLLECTION_ID: u64 = 2991497212;
+        let provider = TestProvider::new();
+
+        let details = provider.request_collection_details(COLLECTION_ID).await?;
+        println!("{details:#?}");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn collection_browse_parse_test() -> Result<(), error::Error> {
+        let provider = TestProvider::new();
+        let result = provider
+            .query_collections(
+                268500,
+                1,
+                QueryParams {
+                    search_text: String::from(""),
                     sort_method: QuerySort::Trend(QueryPeriod::AllTime),
                     tags: BTreeSet::new(),
                 },

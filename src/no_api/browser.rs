@@ -3,7 +3,7 @@ use std::{
     ops::Not,
     path::PathBuf,
     str::FromStr,
-    sync::{Arc, LazyLock},
+    sync::{Arc, LazyLock, atomic::AtomicU64},
 };
 
 use apply::Apply;
@@ -23,30 +23,71 @@ static WEBCACHE_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
 
 pub trait CacheProvider: Clone {
     fn get_item(&self, id: u64) -> Option<Arc<workshop_reader::WorkshopFile>>;
-    fn get_search(&self, query: &str) -> Option<Arc<workshop_reader::QueryResult>>;
+    fn get_search(&self, query: &str) -> Option<Arc<workshop_reader::QueryItemResult>>;
     fn set_item(&self, id: u64, val: Arc<workshop_reader::WorkshopFile>);
-    fn set_search(&self, query: &str, val: Arc<workshop_reader::QueryResult>);
+    fn set_search(&self, query: &str, val: Arc<workshop_reader::QueryItemResult>);
+
+    fn get_collection(&self, id: u64) -> Option<Arc<workshop_reader::WorkshopCollection>>;
+    fn get_collection_search(
+        &self,
+        query: &str,
+    ) -> Option<Arc<workshop_reader::QueryCollectionResult>>;
+    fn set_collection(&self, id: u64, val: Arc<workshop_reader::WorkshopCollection>);
+    fn set_collection_search(&self, query: &str, val: Arc<workshop_reader::QueryCollectionResult>);
 }
 
 #[derive(Debug, Clone)]
 pub struct DefaultCacheProvider {
     items: moka::sync::Cache<u64, Arc<workshop_reader::WorkshopFile>>,
-    searches: moka::sync::Cache<String, Arc<workshop_reader::QueryResult>>,
+    searches: moka::sync::Cache<String, Arc<workshop_reader::QueryItemResult>>,
+
+    // Unlike with the API, due to the potential of users being rate limited for activity,
+    // we will also do disk caching for collections
+    collections: moka::sync::Cache<u64, Arc<workshop_reader::WorkshopCollection>>,
+    collection_searches: moka::sync::Cache<String, Arc<workshop_reader::QueryCollectionResult>>,
+}
+
+impl Default for DefaultCacheProvider {
+    fn default() -> Self {
+        Self {
+            items: moka::sync::Cache::new(1024),
+            searches: moka::sync::Cache::new(64),
+            collections: moka::sync::Cache::new(128),
+            collection_searches: moka::sync::Cache::new(32),
+        }
+    }
 }
 
 impl CacheProvider for DefaultCacheProvider {
     fn get_item(&self, id: u64) -> Option<Arc<workshop_reader::WorkshopFile>> {
         self.items.get(&id)
     }
-    fn get_search(&self, query: &str) -> Option<Arc<workshop_reader::QueryResult>> {
+    fn get_search(&self, query: &str) -> Option<Arc<workshop_reader::QueryItemResult>> {
         self.searches.get(query)
     }
 
     fn set_item(&self, id: u64, val: Arc<workshop_reader::WorkshopFile>) {
         self.items.insert(id, val);
     }
-    fn set_search(&self, query: &str, val: Arc<workshop_reader::QueryResult>) {
+    fn set_search(&self, query: &str, val: Arc<workshop_reader::QueryItemResult>) {
         self.searches.insert(query.to_string(), val);
+    }
+
+    fn get_collection(&self, id: u64) -> Option<Arc<workshop_reader::WorkshopCollection>> {
+        self.collections.get(&id)
+    }
+    fn get_collection_search(
+        &self,
+        query: &str,
+    ) -> Option<Arc<workshop_reader::QueryCollectionResult>> {
+        self.collection_searches.get(query)
+    }
+
+    fn set_collection(&self, id: u64, val: Arc<workshop_reader::WorkshopCollection>) {
+        self.collections.insert(id, val);
+    }
+    fn set_collection_search(&self, query: &str, val: Arc<workshop_reader::QueryCollectionResult>) {
+        self.collection_searches.insert(query.to_string(), val);
     }
 }
 
@@ -57,10 +98,32 @@ pub struct WorkshopClient<C: CacheProvider = DefaultCacheProvider> {
     rate_limiter: Arc<governor::DefaultDirectRateLimiter>,
     webcache: super::webcache::WebCache,
 
-    query: workshop_reader::QueryParams,
-    page: u32,
-    max_page: u32,
-    lifetime: u32,
+    lifetime: Arc<AtomicU64>,
+}
+
+impl<C: CacheProvider + Default> WorkshopClient<C> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl<C: CacheProvider + Default> Default for WorkshopClient<C> {
+    fn default() -> Self {
+        Self {
+            cache: Default::default(),
+            client: reqwest::ClientBuilder::new()
+                .user_agent(CLIENT_USER_AGENT)
+                .build()
+                .expect("failed to build reqwest client"),
+            rate_limiter: Arc::new(governor::DefaultDirectRateLimiter::direct(unsafe {
+                governor::Quota::per_minute(std::num::NonZero::new_unchecked(8))
+                    .allow_burst(std::num::NonZero::new_unchecked(4))
+            })),
+            webcache: super::webcache::WebCache::new(WEBCACHE_DIR.clone())
+                .expect("failed to initialize webcache"),
+            lifetime: Arc::new(AtomicU64::new(crate::web::DEFAULT_CACHE_TIME as u64)),
+        }
+    }
 }
 
 impl<C> workshop_reader::PageProvider for WorkshopClient<C>
@@ -69,21 +132,28 @@ where
 {
     type Error = reqwest::Error;
 
-    async fn request_page(&self, url: String) -> Result<String, Self::Error> {
-        let limit = chrono::Utc::now() - std::time::Duration::from_secs(self.lifetime as u64);
-        if let Some(cached) = self.webcache.get_entry_after(&url, limit) {
+    async fn request_page<U: reqwest::IntoUrl + Send>(
+        &self,
+        url: U,
+    ) -> Result<String, Self::Error> {
+        let url = url.into_url()?;
+        let limit = chrono::Utc::now()
+            - std::time::Duration::from_secs(
+                self.lifetime.load(std::sync::atomic::Ordering::Relaxed),
+            );
+        if let Some(cached) = self.webcache.get_entry_after(url.as_str(), limit) {
             return Ok(cached.page);
         }
 
         self.rate_limiter.until_ready().await;
-        if let Some(cached) = self.webcache.get_entry(&url) {
+        if let Some(cached) = self.webcache.get_entry(url.as_str()) {
             return Ok(cached.page);
         }
 
-        let response = self.client.get(&url).send().await?;
+        let response = self.client.get(url.clone()).send().await?;
         let body = response.text().await?;
 
-        if let Err(err) = self.webcache.cache_page(&url, &body) {
+        if let Err(err) = self.webcache.cache_page(url.as_str(), &body) {
             eprintln!("Failed to write page to disk cache: {err:?}");
         }
 
@@ -117,34 +187,77 @@ where
         app_id: u64,
         page: u32,
         params: workshop_reader::QueryParams,
-    ) -> Result<Arc<workshop_reader::QueryResult>, workshop_reader::error::Error> {
+    ) -> Result<Arc<workshop_reader::QueryItemResult>, workshop_reader::error::Error> {
         let query = Self::build_browse_url(app_id, page, params);
-        if let Some(result) = self.cache.get_search(&query) {
+        if let Some(result) = self.cache.get_search(query.as_str()) {
             Ok(result)
         } else {
             let page = self.request_page_wrapped(query.clone()).await?;
             Self::parse_browse(&page).map(Arc::new).inspect(|arc| {
-                self.cache.set_search(&query, arc.clone());
+                self.cache.set_search(query.as_str(), arc.clone());
             })
+        }
+    }
+
+    async fn request_collection_details(
+        &self,
+        id: u64,
+    ) -> Result<Arc<workshop_reader::WorkshopCollection>, workshop_reader::error::Error> {
+        if let Some(details) = self.cache.get_collection(id) {
+            Ok(details)
+        } else {
+            let page = self.request_page_wrapped(Self::build_item_url(id)).await?;
+            Self::parse_collection(&page)
+                .map(|c| workshop_reader::WorkshopCollection { id, ..c })
+                .map(Arc::new)
+                .inspect(|arc| {
+                    self.cache.set_collection(id, arc.clone());
+                })
+        }
+    }
+
+    async fn query_collections(
+        &self,
+        app_id: u64,
+        page: u32,
+        params: workshop_reader::QueryParams,
+    ) -> Result<Arc<workshop_reader::QueryCollectionResult>, workshop_reader::error::Error> {
+        let query = Self::build_collection_browse_url(app_id, page, params);
+        if let Some(result) = self.cache.get_collection_search(query.as_str()) {
+            Ok(result)
+        } else {
+            let page = self.request_page_wrapped(query.clone()).await?;
+            Self::parse_browse_collection(&page)
+                .map(Arc::new)
+                .inspect(|arc| {
+                    self.cache
+                        .set_collection_search(query.as_str(), arc.clone());
+                })
         }
     }
 }
 
-pub struct WorkshopItemsBrowser<C>
+pub struct WorkshopBrowser<C, I>
 where
     C: CacheProvider + Sync,
+    I: Sized,
 {
     client: WorkshopClient<C>,
+
+    max_page: u32,
+    page: u32,
+    query: workshop_reader::QueryParams,
+    period: workshop_reader::QueryPeriod,
 
     edit_query: workshop_reader::QueryParams,
     edit_period: workshop_reader::QueryPeriod,
     scroll_id: iced::widget::Id,
     tags_toggled: bool,
-    query_result: Option<Arc<workshop_reader::QueryResult>>,
+    query_result: Option<Arc<workshop_reader::QueryResult<I>>>,
 }
 
 #[derive(Debug, Clone)]
-pub enum WorkshopClientMessage {
+pub enum WorkshopClientMessage<I> {
     Page(u32),
     SubmitQuery,
     EditQueryText(String),
@@ -153,12 +266,18 @@ pub enum WorkshopClientMessage {
     ToggleTags(bool),
     EditTag(web::XCOM2WorkshopTag),
 
-    ResolveQuery(Arc<workshop_reader::QueryResult>),
+    ResolveQuery(Arc<workshop_reader::QueryResult<I>>),
 }
 
-impl From<WorkshopClientMessage> for crate::Message {
-    fn from(value: WorkshopClientMessage) -> Self {
-        Self::WorkshopMessageNoAPI(value)
+impl From<WorkshopClientMessage<workshop_reader::QueryItem>> for crate::Message {
+    fn from(value: WorkshopClientMessage<workshop_reader::QueryItem>) -> Self {
+        Self::WorkshopMessageBrowseItemNoAPI(value)
+    }
+}
+
+impl From<WorkshopClientMessage<workshop_reader::QueryCollection>> for crate::Message {
+    fn from(value: WorkshopClientMessage<workshop_reader::QueryCollection>) -> Self {
+        Self::WorkshopMessageBrowseCollectionNoAPI(value)
     }
 }
 
@@ -214,19 +333,32 @@ impl From<crate::web::WorkshopTrendPeriod> for workshop_reader::QueryPeriod {
     }
 }
 
-impl<C> crate::browser::WorkshopBrowser for WorkshopItemsBrowser<C>
+trait WorkshopBrowserNoAPI {
+    type Item;
+
+    fn render_preview_box_noapi<'a>(
+        &'a self,
+        state: &'a crate::App,
+        item: &'a Self::Item,
+    ) -> iced::Element<'a, crate::Message>;
+}
+
+impl<C, I> crate::browser::WorkshopBrowser for WorkshopBrowser<C, I>
 where
     C: CacheProvider + Sync,
+    I: Sized + Clone,
+    WorkshopClientMessage<I>: Into<crate::Message>,
+    Self: WorkshopBrowserNoAPI<Item = I>,
 {
-    type Item = workshop_reader::QueryItem;
-    type Message = crate::Message;
+    type Item = I;
+    type Message = WorkshopClientMessage<I>;
 
     fn get_max_page(&self) -> u32 {
-        self.client.max_page
+        self.max_page
     }
 
     fn get_page(&self) -> u32 {
-        self.client.page
+        self.page
     }
 
     fn get_query(&self) -> crate::web::WorkshopQuery {
@@ -250,7 +382,7 @@ where
     }
 
     fn on_page_change(&self, _state: &crate::App, new: u32) -> Self::Message {
-        WorkshopClientMessage::Page(new).into()
+        WorkshopClientMessage::Page(new)
     }
 
     fn on_query_period_edited(
@@ -258,15 +390,15 @@ where
         _state: &crate::App,
         new: crate::web::WorkshopTrendPeriod,
     ) -> Self::Message {
-        WorkshopClientMessage::EditPeriod(new).into()
+        WorkshopClientMessage::EditPeriod(new)
     }
 
     fn on_query_sort_edited(&self, _state: &crate::App, new: web::WorkshopSort) -> Self::Message {
-        WorkshopClientMessage::EditSort(new).into()
+        WorkshopClientMessage::EditSort(new)
     }
 
     fn on_query_submitted(&self, _state: &crate::App) -> Self::Message {
-        WorkshopClientMessage::SubmitQuery.into()
+        WorkshopClientMessage::SubmitQuery
     }
 
     fn on_query_tag_edited(
@@ -274,21 +406,36 @@ where
         _state: &crate::App,
         tag: web::XCOM2WorkshopTag,
     ) -> Self::Message {
-        WorkshopClientMessage::EditTag(tag).into()
+        WorkshopClientMessage::EditTag(tag)
     }
 
     fn on_query_tags_toggled(&self, _state: &crate::App, toggled: bool) -> Self::Message {
-        WorkshopClientMessage::ToggleTags(toggled).into()
+        WorkshopClientMessage::ToggleTags(toggled)
     }
 
-    fn on_query_text_edited(&self, _state: &crate::App, new: String) -> Self::Message {
-        WorkshopClientMessage::EditQueryText(new).into()
+    fn on_query_text_edited(&self, _state: &crate::App, new: String) -> WorkshopClientMessage<I> {
+        WorkshopClientMessage::EditQueryText(new)
     }
 
     fn render_preview_box<'a>(
         &'a self,
         state: &'a crate::App,
         item: &'a Self::Item,
+    ) -> iced::Element<'a, crate::Message> {
+        self.render_preview_box_noapi(state, item)
+    }
+}
+
+impl<C> WorkshopBrowserNoAPI for WorkshopBrowser<C, workshop_reader::QueryItem>
+where
+    C: CacheProvider + Sync,
+{
+    type Item = workshop_reader::QueryItem;
+
+    fn render_preview_box_noapi<'a>(
+        &'a self,
+        state: &'a crate::App,
+        item: &'a workshop_reader::QueryItem,
     ) -> iced::Element<'a, crate::Message> {
         use iced::{
             Alignment::Center,
@@ -333,9 +480,23 @@ where
     }
 }
 
-impl WorkshopItemsBrowser<DefaultCacheProvider> {
-    pub fn new() -> Self {
-        Self::default()
+impl<I> WorkshopBrowser<DefaultCacheProvider, I>
+where
+    I: workshop_reader::ItemPreviewImage,
+{
+    pub fn new(client: WorkshopClient<DefaultCacheProvider>) -> Self {
+        Self {
+            client,
+            query: Default::default(),
+            period: Default::default(),
+            page: 0,
+            max_page: 0,
+            edit_query: Default::default(),
+            edit_period: Default::default(),
+            scroll_id: iced::widget::Id::unique(),
+            tags_toggled: false,
+            query_result: None,
+        }
     }
 
     pub fn cache(&self) -> DefaultCacheProvider {
@@ -350,20 +511,19 @@ impl WorkshopItemsBrowser<DefaultCacheProvider> {
         }
     }
 
-    pub fn set_lifetime(&mut self, lifetime: u32) {
-        if lifetime > 0 {
-            self.client.lifetime = lifetime;
+    pub fn set_lifetime(&mut self, lifetime: u64) {
+        let lifetime = if lifetime > 0 {
+            lifetime
         } else {
-            self.client.lifetime = crate::web::DEFAULT_CACHE_TIME;
-        }
+            crate::web::DEFAULT_CACHE_TIME as u64
+        };
         self.client
-            .webcache
-            .set_lifetime(self.client.lifetime as u64);
+            .lifetime
+            .store(lifetime, std::sync::atomic::Ordering::Relaxed);
+        self.client.webcache.set_lifetime(lifetime);
     }
 
-    pub fn get_items(
-        &self,
-    ) -> impl Iterator<Item = &<Self as crate::browser::WorkshopBrowser>::Item> {
+    pub fn get_items(&self) -> impl Iterator<Item = &I> {
         self.query_result
             .as_ref()
             .map(|query| query.items.iter())
@@ -384,15 +544,15 @@ impl WorkshopItemsBrowser<DefaultCacheProvider> {
     pub fn update(
         &mut self,
         images: &HashMap<String, iced::widget::image::Handle>,
-        message: WorkshopClientMessage,
+        message: WorkshopClientMessage<I>,
     ) -> Task<crate::Message> {
         match message {
             WorkshopClientMessage::Page(page) => {
                 let new = std::cmp::max(page, 1);
-                if new == self.client.page {
+                if new == self.page {
                     return Task::none();
                 }
-                self.client.page = new;
+                self.page = new;
 
                 return self.update(images, WorkshopClientMessage::SubmitQuery);
             }
@@ -401,17 +561,14 @@ impl WorkshopItemsBrowser<DefaultCacheProvider> {
                 {
                     *period = self.edit_period;
                 }
-                self.client.page = std::cmp::max(self.client.page, 1);
-                self.client.query = self.edit_query.clone();
+                let page = std::cmp::max(self.page, 1);
+                let query = self.edit_query.clone();
 
                 let client = self.client.clone();
                 let scroll_task = reset_scroll!(self.scroll_id.clone());
                 return Task::done(crate::Message::SetBusy(true))
                     .chain(Task::future(async move {
-                        match client
-                            .query_items(XCOM_APPID as u64, client.page, client.query.clone())
-                            .await
-                        {
+                        match client.query_items(XCOM_APPID as u64, page, query).await {
                             Ok(query) => WorkshopClientMessage::ResolveQuery(query).into(),
                             Err(err) => {
                                 crate::Message::display_error("Page Load Failed", err.to_string())
@@ -436,8 +593,8 @@ impl WorkshopItemsBrowser<DefaultCacheProvider> {
 
             WorkshopClientMessage::ResolveQuery(resolved) => {
                 let image_task = Task::batch(resolved.items.iter().filter_map(|item| {
-                    let url = item.preview_url.clone();
-                    images.contains_key(&item.preview_url).not().then(|| {
+                    let url = item.get_preview_url();
+                    images.contains_key(&url).not().then(|| {
                         Task::future(async move {
                             match web::load_image(&url).await {
                                 Ok(path) => {
@@ -454,44 +611,12 @@ impl WorkshopItemsBrowser<DefaultCacheProvider> {
                     })
                 }));
 
-                self.client.max_page = resolved.pages;
+                self.max_page = resolved.pages;
                 self.query_result = Some(resolved);
                 return image_task;
             }
         }
 
         Task::none()
-    }
-}
-
-impl Default for WorkshopItemsBrowser<DefaultCacheProvider> {
-    fn default() -> Self {
-        Self {
-            client: WorkshopClient {
-                cache: DefaultCacheProvider {
-                    items: moka::sync::Cache::new(1024),
-                    searches: moka::sync::Cache::new(64),
-                },
-                client: reqwest::ClientBuilder::new()
-                    .user_agent(CLIENT_USER_AGENT)
-                    .build()
-                    .expect("failed to build reqwest client"),
-                rate_limiter: Arc::new(governor::DefaultDirectRateLimiter::direct(unsafe {
-                    governor::Quota::per_minute(std::num::NonZero::new_unchecked(8))
-                        .allow_burst(std::num::NonZero::new_unchecked(4))
-                })),
-                webcache: super::webcache::WebCache::new(WEBCACHE_DIR.clone())
-                    .expect("failed to initialize webcache"),
-                query: Default::default(),
-                page: 0,
-                max_page: 0,
-                lifetime: crate::web::DEFAULT_CACHE_TIME,
-            },
-            edit_query: Default::default(),
-            edit_period: Default::default(),
-            scroll_id: iced::widget::Id::unique(),
-            tags_toggled: false,
-            query_result: None,
-        }
     }
 }
