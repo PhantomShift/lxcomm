@@ -260,6 +260,7 @@ where
 pub enum WorkshopClientMessage<I> {
     Page(u32),
     SubmitQuery,
+    RefreshQuery,
     EditQueryText(String),
     EditSort(web::WorkshopSort),
     EditPeriod(web::WorkshopTrendPeriod),
@@ -554,17 +555,23 @@ where
                 }
                 self.page = new;
 
-                return self.update(images, WorkshopClientMessage::SubmitQuery);
+                return self.update(images, WorkshopClientMessage::RefreshQuery);
             }
             WorkshopClientMessage::SubmitQuery => {
                 if let workshop_reader::QuerySort::Trend(period) = &mut self.edit_query.sort_method
                 {
                     *period = self.edit_period;
                 }
-                let page = std::cmp::max(self.page, 1);
-                let query = self.edit_query.clone();
+                self.page = 1;
+                self.query = self.edit_query.clone();
 
+                return self.update(images, WorkshopClientMessage::RefreshQuery);
+            }
+            WorkshopClientMessage::RefreshQuery => {
+                let query = self.query.clone();
+                let page = self.page;
                 let client = self.client.clone();
+
                 let scroll_task = reset_scroll!(self.scroll_id.clone());
                 return Task::done(crate::Message::SetBusy(true))
                     .chain(Task::future(async move {
