@@ -225,6 +225,18 @@ pub fn process_description(
     Ok(items)
 }
 
+pub fn process_description_str(description: &str) -> Result<Vec<Item>, crate::error::Error> {
+    let html = scraper::Html::parse_document(description);
+
+    let Some(desc) = html.select(&crate::selectors::DESCRIPTION).next() else {
+        return Err(crate::error::Error::parse_error(
+            "missing description when attempting to process markup",
+        ));
+    };
+
+    process_description(desc)
+}
+
 #[tokio::test]
 async fn test_process_description() -> Result<(), Box<dyn std::error::Error>> {
     let highlander =
