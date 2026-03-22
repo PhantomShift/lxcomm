@@ -827,6 +827,11 @@ pub fn handle_url(url: String) -> Message {
         return Message::None;
     };
 
+    let scheme = url.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Message::None;
+    }
+
     if url.domain() == Some("steamcommunity.com")
         && url
             .path_segments()
