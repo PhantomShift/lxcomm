@@ -20,6 +20,17 @@ static WEBCACHE_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
     path
 });
 
+pub const fn star_string(stars: u8) -> &'static str {
+    match stars {
+        0 => "☆☆☆☆☆",
+        1 => "★☆☆☆☆",
+        2 => "★★☆☆☆",
+        3 => "★★★☆☆",
+        4 => "★★★★☆",
+        5.. => "★★★★★",
+    }
+}
+
 pub trait CacheProvider: Clone {
     fn get_item(&self, id: u64) -> Option<Arc<workshop_reader::WorkshopFile>>;
     fn get_search(&self, query: &str) -> Option<Arc<workshop_reader::QueryItemResult>>;
@@ -463,7 +474,7 @@ where
             text(&item.title),
             text(id),
             text(&item.author_name),
-            text!("{} out of 5", item.stars),
+            text(star_string(item.stars)),
             button(text("View").align_x(Center))
                 .width(Fill)
                 // compat, eventually change all IDs to u64
@@ -504,7 +515,7 @@ where
     ) -> iced::Element<'a, crate::Message> {
         use iced::{
             Length::Fill,
-            widget::{button, column, container, row, space, text, tooltip},
+            widget::{button, column, container, row, text, tooltip},
         };
 
         let id = item.id;
@@ -518,7 +529,7 @@ where
                     text(&item.title),
                     text(id),
                     text(&item.assembler_name),
-                    row![space::horizontal(), text!("{} out of 5", item.stars)]
+                    text(star_string(item.stars)),
                 ]
             ])
             .on_press(crate::Message::SetViewingScrapedCollection(id))
