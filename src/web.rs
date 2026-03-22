@@ -35,7 +35,8 @@ use tokio::io::AsyncWriteExt;
 pub const DEFAULT_CACHE_TIME: u32 = 86400;
 pub const PROFILE_SUMMARY_CACHE_TIME: u32 = 86400 * 7;
 
-pub static CLIENT_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+pub static CLIENT_USER_AGENT: &str =
+    concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
 pub static IMAGE_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
     let dir = CACHE_DIR.join("images");
@@ -56,6 +57,13 @@ pub fn image_path<S: AsRef<str>>(s: S) -> PathBuf {
 }
 
 pub async fn load_image<S: AsRef<str>>(url: S) -> Result<iced::widget::image::Handle> {
+    static IMAGE_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+        reqwest::Client::builder()
+            .user_agent(CLIENT_USER_AGENT)
+            .build()
+            .expect("failed to build reqwest client")
+    });
+
     let path = image_path(url.as_ref());
 
     match path.try_exists() {
@@ -71,7 +79,7 @@ pub async fn load_image<S: AsRef<str>>(url: S) -> Result<iced::widget::image::Ha
         ),
     };
 
-    let response = reqwest::get(url.as_ref()).await?;
+    let response = IMAGE_CLIENT.get(url.as_ref()).send().await?;
     let bytes = response.bytes().await?;
     let handle = image::Handle::from_bytes(bytes.clone());
     std::fs::write(&path, bytes)?;
