@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ops::Not,
     path::PathBuf,
     str::FromStr,
@@ -7,10 +7,10 @@ use std::{
 };
 
 use apply::Apply;
-use iced::Task;
+use iced::{Task, futures::SinkExt};
 use workshop_reader::{self, PageProvider};
 
-use crate::{XCOM_APPID, reset_scroll, web};
+use crate::{App, XCOM_APPID, reset_scroll, web};
 
 static WEBCACHE_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
     let path = crate::CACHE_DIR.join("noapi_webcache");
@@ -246,7 +246,6 @@ where
     max_page: u32,
     page: u32,
     query: workshop_reader::QueryParams,
-    period: workshop_reader::QueryPeriod,
 
     edit_query: workshop_reader::QueryParams,
     edit_period: workshop_reader::QueryPeriod,
@@ -341,6 +340,14 @@ trait WorkshopBrowserNoAPI {
         state: &'a crate::App,
         item: &'a Self::Item,
     ) -> iced::Element<'a, crate::Message>;
+
+    fn make_grid_noapi(&self) -> iced::widget::Grid<'_, crate::Message> {
+        use iced::widget::grid;
+        grid::Grid::new()
+            .spacing(16)
+            .fluid(360)
+            .height(grid::Sizing::AspectRatio(0.5))
+    }
 }
 
 impl<C, I> crate::browser::WorkshopBrowser for WorkshopBrowser<C, I>
@@ -413,7 +420,7 @@ where
         WorkshopClientMessage::ToggleTags(toggled)
     }
 
-    fn on_query_text_edited(&self, _state: &crate::App, new: String) -> WorkshopClientMessage<I> {
+    fn on_query_text_edited(&self, _state: &crate::App, new: String) -> Self::Message {
         WorkshopClientMessage::EditQueryText(new)
     }
 
@@ -423,6 +430,10 @@ where
         item: &'a Self::Item,
     ) -> iced::Element<'a, crate::Message> {
         self.render_preview_box_noapi(state, item)
+    }
+
+    fn make_grid(&self) -> iced::widget::Grid<'_, crate::Message> {
+        self.make_grid_noapi()
     }
 }
 
@@ -480,15 +491,84 @@ where
     }
 }
 
+impl<C> WorkshopBrowserNoAPI for WorkshopBrowser<C, workshop_reader::QueryCollection>
+where
+    C: CacheProvider + Sync,
+{
+    type Item = workshop_reader::QueryCollection;
+
+    fn render_preview_box_noapi<'a>(
+        &'a self,
+        state: &'a crate::App,
+        item: &'a workshop_reader::QueryCollection,
+    ) -> iced::Element<'a, crate::Message> {
+        use iced::{
+            Length::Fill,
+            widget::{button, column, container, row, space, text, tooltip},
+        };
+
+        let id = item.id;
+
+        tooltip(
+            button(row![
+                web::image_maybe(&state.images, &item.preview_url)
+                    .width(128)
+                    .height(Fill),
+                column![
+                    text(&item.title),
+                    text(id),
+                    text(&item.assembler_name),
+                    row![space::horizontal(), text!("{} out of 5", item.stars)]
+                ]
+            ])
+            .on_press(crate::Message::SetViewingScrapedCollection(id))
+            .style(button::text),
+            item.short_description.as_ref().map(|desc| {
+                container(text(desc).shaping(text::Shaping::Advanced))
+                    .padding(8)
+                    .style(container::rounded_box)
+            }),
+            tooltip::Position::Bottom,
+        )
+        .into()
+    }
+
+    fn make_grid_noapi(&self) -> iced::widget::Grid<'_, crate::Message> {
+        use iced::widget::grid;
+        grid::Grid::new()
+            .fluid(512)
+            .spacing(16)
+            .height(grid::aspect_ratio(640, 160))
+    }
+}
+
+// TODO: Just... don't do this...
+// I only realized close to the end that I didnt't have a way of discriminating
+pub enum QueryType {
+    Item,
+    Collection,
+}
+
+pub trait Queryable {
+    const QUERY_TYPE: QueryType;
+}
+
+impl Queryable for workshop_reader::QueryItem {
+    const QUERY_TYPE: QueryType = QueryType::Item;
+}
+
+impl Queryable for workshop_reader::QueryCollection {
+    const QUERY_TYPE: QueryType = QueryType::Collection;
+}
+
 impl<I> WorkshopBrowser<DefaultCacheProvider, I>
 where
-    I: workshop_reader::ItemPreviewImage,
+    I: workshop_reader::ItemPreviewImage + Queryable,
 {
     pub fn new(client: WorkshopClient<DefaultCacheProvider>) -> Self {
         Self {
             client,
             query: Default::default(),
-            period: Default::default(),
             page: 0,
             max_page: 0,
             edit_query: Default::default(),
@@ -541,6 +621,16 @@ where
         Box::pin(async move { client.request_item_details(id).await })
     }
 
+    pub fn request_collection_details(
+        &self,
+        id: u64,
+    ) -> impl Future<
+        Output = Result<Arc<workshop_reader::WorkshopCollection>, workshop_reader::error::Error>,
+    > + 'static {
+        let client = self.client.clone();
+        Box::pin(async move { client.request_collection_details(id).await })
+    }
+
     pub fn update(
         &mut self,
         images: &HashMap<String, iced::widget::image::Handle>,
@@ -574,8 +664,23 @@ where
                 let scroll_task = reset_scroll!(self.scroll_id.clone());
                 return Task::done(crate::Message::SetBusy(true))
                     .chain(Task::future(async move {
-                        match client.query_items(XCOM_APPID as u64, page, query).await {
-                            Ok(query) => WorkshopClientMessage::ResolveQuery(query).into(),
+                        let res = match I::QUERY_TYPE {
+                            QueryType::Collection => client
+                                .query_collections(XCOM_APPID as u64, page, query)
+                                .await
+                                .map(|q| {
+                                    crate::Message::from(WorkshopClientMessage::ResolveQuery(q))
+                                }),
+                            QueryType::Item => client
+                                .query_items(XCOM_APPID as u64, page, query)
+                                .await
+                                .map(|q| {
+                                    crate::Message::from(WorkshopClientMessage::ResolveQuery(q))
+                                }),
+                        };
+
+                        match res {
+                            Ok(query) => query,
                             Err(err) => {
                                 crate::Message::display_error("Page Load Failed", err.to_string())
                             }
@@ -624,5 +729,204 @@ where
         }
 
         Task::none()
+    }
+}
+
+impl App {
+    pub fn set_viewing_collection_scraped(&mut self, id: u64) -> Task<crate::Message> {
+        let existing: HashSet<_> = self.images.keys().cloned().collect();
+
+        Task::future(self.noapi_collection_browser.request_collection_details(id)).then(move |resp| {
+            match resp {
+                Ok(details) => {
+                    let images: Vec<_> = details.preview_url.iter()
+                        .cloned()
+                        .chain(
+                            details.items.iter()
+                                .filter_map(|i| i.preview_url.clone().filter(|url| !existing.contains(url)))
+                            )
+                        .collect();
+
+                    Task::batch([
+                        details.description.as_ref().map(|desc| {
+                            match workshop_reader::descriptions::process_description_str(desc) {
+                                Ok(items) => Task::done(crate::Message::ScrapedMarkupProcessed(details.id, items)),
+                                Err(err) => {
+                                    eprintln!("Error processing description: {err:?}");
+                                    Task::none()
+                                }
+                            }
+                        }).unwrap_or_default(),
+                        Task::stream(iced::stream::channel(
+                            64,
+                            |mut sender: iced::futures::channel::mpsc::Sender<crate::Message>| async move {
+                                for image in images.into_iter() {
+                                    match web::load_image(&image).await {
+                                        Ok(handle) => {
+                                            if let Err(err) = sender.feed(crate::Message::ImageLoaded(image, handle)).await {
+                                                eprintln!("Error sending resolved image: {err:?}");
+                                            }
+                                        }
+                                        Err(err) => eprintln!("Error resolving image: {err:?}")
+                                    }
+                                }
+                            },
+                        ))
+                    ])
+                }
+                Err(err) => Task::done(crate::Message::display_error(
+                    "Error Loading Collection",
+                    format!("Failed to get details for collection: {err:?}"),
+                )),
+            }
+        })
+    }
+
+    pub fn view_collection_scraped(&self, id: u64) -> iced::Element<'_, crate::Message> {
+        use crate::Message;
+        use iced::{
+            Center, Fill, Shrink,
+            widget::{button, column, container, grid, markdown, row, scrollable, space, text},
+        };
+
+        let Some(details) = self.noapi_collection_browser.cache().get_collection(id) else {
+            return container(
+                column![
+                    space::vertical(),
+                    iced_aw::Spinner::new(),
+                    text("Loading item details..."),
+                    space::vertical(),
+                    row![
+                        space::horizontal(),
+                        button("Close")
+                            .style(button::danger)
+                            .on_press(Message::CloseModal)
+                    ],
+                ]
+                .align_x(Center)
+                .height(Fill)
+                .width(Fill),
+            )
+            .style(container::rounded_box)
+            .into();
+        };
+
+        container(
+            container(column![
+                scrollable(
+                    column![
+                        column![
+                            details.preview_url.as_ref().map(|url| {
+                                web::image_maybe_fit(&self.images, url, iced::ContentFit::Cover)
+                                    .height(300)
+                                    .width(Fill)
+                            }),
+                            text(details.title.clone()),
+                            text!("ID: {}", details.id),
+                            text!("Items: {}", details.items.len()),
+                            row![
+                                button("Download All").on_press_with({
+                                    let details = details.clone();
+                                    move || {
+                                        Message::DownloadMultipleRequested(
+                                            details.items.iter().map(|i| i.id as u32).collect(),
+                                        )
+                                    }
+                                }),
+                                button("Add All to Profile").on_press_with({
+                                    let collection = details.clone();
+                                    move || {
+                                        Message::ItemDetailsAddToLibraryRequest(Vec::from_iter(
+                                            collection.items.iter().map(|i| (i.id as u32).into()),
+                                        ))
+                                    }
+                                }),
+                                button("Import as Profile").on_press_with({
+                                    let collection = details.clone();
+                                    move || {
+                                        use crate::collections;
+                                        // TODO: Resolve this properly instead of converting here
+                                        let collection = collections::Collection {
+                                            source: collections::CollectionSource::Workshop(
+                                                collection.id as u32,
+                                            ),
+                                            title: collection.title.clone(),
+                                            items: Vec::from_iter(
+                                                collection.items.iter().map(|i| i.id as u32),
+                                            ),
+                                            image: collections::ImageSource::Web(
+                                                collection.preview_url.clone().unwrap_or_default(),
+                                            ),
+                                            banner: None,
+                                            description: String::new(),
+                                        };
+                                        Message::ProfileImportCollectionRequested(Arc::new(
+                                            collection,
+                                        ))
+                                    }
+                                }),
+                            ]
+                        ]
+                        .width(Fill),
+                        container({
+                            self.markup_cache.get_scraped(id).map(|items| {
+                                let settings = markdown::Settings::with_style(
+                                    markdown::Style::from_palette(self.theme().palette()),
+                                );
+
+                                row(items.iter().map(|item| {
+                                    crate::markup::view_scraped(item, settings, web::handle_url)
+                                }))
+                                .wrap()
+                            })
+                        })
+                        .width(Fill)
+                        .padding(16)
+                        .style(container::dark),
+                        grid(details.items.iter().map(|item| {
+                            container(
+                                button(
+                                    row![
+                                        web::image_maybe(
+                                            &self.images,
+                                            item.preview_url.clone().unwrap_or_default()
+                                        ),
+                                        column![
+                                            text(item.title.clone()),
+                                            text(item.id),
+                                            item.short_description.clone().map(text)
+                                        ]
+                                        .clip(true)
+                                    ]
+                                    .spacing(8),
+                                )
+                                .style(button::text)
+                                .on_press(Message::SetViewingItem((item.id as u32).into())),
+                            )
+                            .style(container::secondary)
+                            .into()
+                        }))
+                        .fluid(300)
+                        .spacing(16)
+                        .height(grid::aspect_ratio(300, 100))
+                    ]
+                    .spacing(16)
+                    .padding(16)
+                    .height(Shrink)
+                ),
+                row![
+                    space::horizontal(),
+                    button("Close")
+                        .style(button::danger)
+                        .on_press(Message::CloseModal)
+                ]
+                .height(30)
+            ])
+            .style(container::rounded_box),
+        )
+        .center(Fill)
+        .width(Fill)
+        .padding(32)
+        .into()
     }
 }

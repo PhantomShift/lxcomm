@@ -314,6 +314,8 @@ pub enum Message {
         no_api::browser::WorkshopClientMessage<workshop_reader::QueryCollection>,
     ),
     NoAPIDescriptionProcessed(u64, Vec<workshop_reader::descriptions::Item>),
+    SetViewingScrapedCollection(u64),
+    ScrapedMarkupProcessed(u64, Vec<workshop_reader::descriptions::Item>),
 
     #[default]
     None,
@@ -371,6 +373,7 @@ pub enum AppModal {
     ProfileDetails(String),
     ItemDetailedView(ModId),
     CollectionDetailedView(CollectionSource),
+    ScrapedCollectionDetailedView(u64),
     Busy,
     BusyMessage(String),
     ErrorMessage(String, String),
@@ -424,6 +427,7 @@ impl AppModal {
             ProfileDetails(_) => false,
             ItemDetailedView(_) => true,
             CollectionDetailedView(_) => true,
+            ScrapedCollectionDetailedView(_) => true,
             Busy => false,
             BusyMessage(_) => false,
             ErrorMessage(_, _) => true,
@@ -3221,6 +3225,14 @@ impl App {
                         .chain(Task::done(Message::SetViewingItem((id as u32).into())));
                 }
             }
+            Message::SetViewingScrapedCollection(id) => {
+                self.modal_stack
+                    .push(AppModal::ScrapedCollectionDetailedView(id));
+                return self.set_viewing_collection_scraped(id);
+            }
+            Message::ScrapedMarkupProcessed(id, items) => {
+                self.markup_cache.cache_scraped(id, items);
+            }
 
             Message::LaunchLogAction(action) => match action {
                 text_editor::Action::Edit(_) => (),
@@ -3833,8 +3845,8 @@ impl App {
                     scrollable(
                         container({
                             let settings = markdown::Settings::with_style(markdown::Style::from_palette(
-                                        self.theme().palette()
-                                    ));
+                                self.theme().palette()
+                            ));
                             if let Some(items) = self.markup_cache.get_scraped(id) {
                                 row(items.iter().map(|item| markup::view_scraped(item, settings, web::handle_url)))
                                     .wrap().into()
@@ -4012,7 +4024,8 @@ impl App {
                     AppPage::Settings => self.settings_page(),
                     AppPage::Downloads => self.downloads_page(),
                     AppPage::GameLogs => self.game_logs_page(),
-                    AppPage::Collections => self.collections.render_browser(self, self.collections.loaded_web_collections.iter()),
+                    // AppPage::Collections => self.collections.render_browser(self, self.collections.loaded_web_collections.iter()),
+                    AppPage::Collections => self.noapi_collection_browser.render_browser(self, self.noapi_collection_browser.get_items()),
                 }
             ],
             {
@@ -4050,6 +4063,7 @@ impl App {
                             }
                         },
                         AppModal::CollectionDetailedView(source) => self.collections.view_collection_detailed(self, source),
+                        AppModal::ScrapedCollectionDetailedView(id) => self.view_collection_scraped(*id),
                         AppModal::AsyncDialog(dialog) => dialog.view().max_width(512.0).into(),
                         dialog @ AppModal::AsyncChoose {
                             strategy: AsyncDialogStrategy::Stack | AsyncDialogStrategy::Replace,

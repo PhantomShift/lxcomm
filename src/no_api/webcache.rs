@@ -49,6 +49,7 @@ impl Factory for ExpirationFactory {
 #[derive(Clone)]
 pub struct WebCache {
     path: PathBuf,
+    #[allow(dead_code)]
     db: Database,
     /// `[query] -> [timestamp_le_bytes\0HTML Page]` pair
     pages: Keyspace,

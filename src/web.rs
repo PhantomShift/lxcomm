@@ -87,12 +87,13 @@ pub async fn load_image<S: AsRef<str>>(url: S) -> Result<iced::widget::image::Ha
     Ok(handle)
 }
 
-pub fn image_maybe<'a, S: AsRef<str>>(
+pub fn image_maybe_fit<'a, S: AsRef<str>>(
     state: &'a HashMap<String, image::Handle>,
     id: S,
+    fit: iced::ContentFit,
 ) -> Container<'a, Message> {
     if let Some(handle) = state.get(id.as_ref()) {
-        container(image(handle))
+        container(image(handle).content_fit(fit))
     } else {
         container(
             iced_aw::Spinner::new()
@@ -102,6 +103,13 @@ pub fn image_maybe<'a, S: AsRef<str>>(
         )
         .center(Fill)
     }
+}
+
+pub fn image_maybe<'a, S: AsRef<str>>(
+    state: &'a HashMap<String, image::Handle>,
+    id: S,
+) -> Container<'a, Message> {
+    image_maybe_fit(state, id, iced::ContentFit::default())
 }
 
 pub fn image_from_source<'a>(
