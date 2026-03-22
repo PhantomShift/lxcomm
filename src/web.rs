@@ -35,6 +35,8 @@ use tokio::io::AsyncWriteExt;
 pub const DEFAULT_CACHE_TIME: u32 = 86400;
 pub const PROFILE_SUMMARY_CACHE_TIME: u32 = 86400 * 7;
 
+pub static CLIENT_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+
 pub static IMAGE_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
     let dir = CACHE_DIR.join("images");
     std::fs::create_dir_all(&dir).expect("cache directory shouild be writable");

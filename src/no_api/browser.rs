@@ -12,7 +12,6 @@ use workshop_reader::{self, PageProvider};
 
 use crate::{XCOM_APPID, reset_scroll, web};
 
-static CLIENT_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 static WEBCACHE_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
     let path = crate::CACHE_DIR.join("noapi_webcache");
     if !path.exists() {
@@ -112,7 +111,7 @@ impl<C: CacheProvider + Default> Default for WorkshopClient<C> {
         Self {
             cache: Default::default(),
             client: reqwest::ClientBuilder::new()
-                .user_agent(CLIENT_USER_AGENT)
+                .user_agent(web::CLIENT_USER_AGENT)
                 .build()
                 .expect("failed to build reqwest client"),
             rate_limiter: Arc::new(governor::DefaultDirectRateLimiter::direct(unsafe {
