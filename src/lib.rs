@@ -65,6 +65,7 @@ use crate::platform::extensions::NotificationExtLinux;
 
 pub mod browser;
 pub mod collections;
+pub mod db;
 pub mod extensions;
 pub mod files;
 pub mod library;

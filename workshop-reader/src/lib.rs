@@ -140,7 +140,7 @@ pub mod error {
     impl std::error::Error for Error {}
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct WorkshopFile {
     pub published_file_id: u64,
     pub creator: String,
@@ -158,7 +158,7 @@ pub struct WorkshopFile {
 }
 
 /// Data stored for previewing items in a collection
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct WorkshopCollectionItem {
     pub id: u64,
     pub title: String,
@@ -168,7 +168,7 @@ pub struct WorkshopCollectionItem {
     pub stars: u8,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct WorkshopCollection {
     pub id: u64,
     pub title: String,
